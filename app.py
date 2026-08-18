@@ -13,7 +13,7 @@ col_titolo, col_chat = st.columns([3, 1])
 with col_titolo:
     st.title("📦 Target ERP — Smart Order & Quote Hub")
 
-wwith col_chat:
+with col_chat:
     with st.popover("💬 Chat con Victoria", use_container_width=True):
         st.subheader("🤖 Victoria — Target ERP")
         st.caption("Chiedi supporto o informazioni sui prodotti.")
