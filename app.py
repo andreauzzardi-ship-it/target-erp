@@ -6,6 +6,20 @@ from google.genai import Client
 # Configurazione pagina
 st.set_page_config(page_title="Target ERP - Smart Order & Quote Hub", layout="wide")
 
+# Nasconde il badge e la barra di stato/toolbar di Streamlit in basso
+st.markdown("""
+    <style>
+    /* Nasconde la toolbar/badge in basso a destra */
+    div[data-testid="stStatusWidget"],
+    .viewerBadge_container__1633t,
+    .styles_viewerBadge__1yB5_,
+    [data-testid="stDecoration"],
+    footer {
+        display: none !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # Recupero SICURO della chiave API dai secrets di Streamlit
 client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
