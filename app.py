@@ -6,28 +6,27 @@ from google.genai import Client
 # Configurazione pagina
 st.set_page_config(page_title="Target ERP - Smart Order & Quote Hub", layout="wide")
 
-#st.markdown("""
-    <style>
-    /* Nasconde footer, watermark, badge e toolbar di Streamlit Cloud */
-    footer,
-    #MainMenu,
-    header,
-    [data-testid="stHeader"],
-    [data-testid="stToolbar"],
-    [data-testid="stStatusWidget"],
-    [data-testid="stActionButtonIcon"],
-    div[class*="viewerBadge"],
-    div[class*="styles_viewerBadge"],
-    a[class*="viewerBadge"],
-    iframe[title="streamlitApp"] + div {
-        display: none !important;
-        visibility: hidden !important;
-        height: 0 !important;
-        width: 0 !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-    }
-    </style>
+st.markdown("""
+<style>
+footer,
+#MainMenu,
+header,
+[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stStatusWidget"],
+[data-testid="stActionButtonIcon"],
+div[class*="viewerBadge"],
+div[class*="styles_viewerBadge"],
+a[class*="viewerBadge"],
+iframe[title="streamlitApp"] + div {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    width: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+</style>
 """, unsafe_allow_html=True)
 
 # Recupero SICURO della chiave API dai secrets di Streamlit
