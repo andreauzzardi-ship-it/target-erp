@@ -19,45 +19,53 @@ with tab_gestionale:
     st.title("Target ERP — Smart Order & Quote Hub")
     # Qui inserisci tutto il codice attuale dei documenti, upload file, tabelle ed export CSV
 
-# --- TAB 2: CHAT CON VICTORIA ---
-with tab_victoria:
-    st.header("Victoria — Assistente Target ERP")
-    st.caption("Chiedi supporto o informazioni sui prodotti.")
+# --- CHAT FLUTTUANTE STILE MESSENGER CON VICTORIA ---
+with st.sidebar:
+    st.divider() # Linea separatoria pulita
+    
+    # Creiamo il pulsante popover che apre la chat fluttuante
+    with st.popover("💬 Chat con Victoria", use_container_width=True):
+        st.subheader("🤖 Victoria — Target ERP")
+        st.caption("Chiedi supporto o informazioni sui prodotti.")
+        
+        # Contenitore per la cronologia dei messaggi
+        chat_container = st.container(height=300)
+        
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+        # Mostra i messaggi passati dentro il rettangolo fluttuante
+        with chat_container:
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
 
-    # Mostra la cronologia messaggi
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+        # Input pulito e nativo che non si sovrappone
+        if prompt := st.chat_input("Scrivi a Victoria..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            
+            with chat_container:
+                with st.chat_message("user"):
+                    st.markdown(prompt)
 
-    # Utilizzo del chat_input nativo al centro della pagina (funziona alla perfezione nei tab)
-    if prompt := st.chat_input("Chiedi info a Victoria..."):
-        # Messaggio Utente
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("assistant"):
+                    with st.spinner("Victoria sta scrivendo..."):
+                        try:
+                            system_directive = (
+                                "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
+                                "Se ti chiedono come ti chiami, rispondi che ti chiami Victoria. "
+                                "Non menzionare mai Google, Gemini o di essere un'IA generica. "
+                            )
+                            response = client.models.generate_content(
+                                model="gemini-2.0-flash",
+                                contents=system_directive + prompt
+                            )
+                            risposta = response.text
+                        except Exception as e:
+                            risposta = f"Errore nella generazione: {e}"
 
-        # Risposta Assistente
-        with st.chat_message("assistant"):
-            with st.spinner("Victoria sta elaborando..."):
-                try:
-                    system_directive = (
-                        "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
-                        "Se ti chiedono come ti chiami, rispondi che ti chiami Victoria. "
-                        "Non menzionare mai Google, Gemini o di essere un'IA generica. "
-                    )
-                    response = client.models.generate_content(
-                        model="gemini-3.5-flash",
-                        contents=system_directive + prompt
-                    )
-                    risposta = response.text
-                except Exception as e:
-                    risposta = f"Errore nella generazione: {e}"
-
-                st.markdown(risposta)
-        st.session_state.messages.append({"role": "assistant", "content": risposta})
+                        st.markdown(risposta)
+            st.session_state.messages.append({"role": "assistant", "content": risposta})
 
 # --- CONTENUTO PRINCIPALE ---
 tipo_doc = st.radio("Seleziona il tipo di documento:", ["🛒 Ordine Cliente", "📄 Offerta"], horizontal=True)
