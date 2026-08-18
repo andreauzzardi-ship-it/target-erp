@@ -30,7 +30,7 @@ with st.sidebar:
             with st.spinner("L'IA sta elaborando..."):
                 try:
                     response = client.models.generate_content(
-                        model='"gemini-3.6"',
+                        model='"gemini-3.5-flash"',
                         contents=prompt
                     )
                     risposta = response.text
