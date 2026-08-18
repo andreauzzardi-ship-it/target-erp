@@ -9,9 +9,9 @@ client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 st.set_page_config(page_title="Target ERP - Gestione Ordini & Offerte", page_icon="📦", layout="wide")
 st.title("📦 Target ERP — Smart Order & Quote Hub")
 
-# --- SIDEBAR: ASSISTENTE AI ---
+# --- SIDEBAR: ASSISTENTE VICTORIA ---
 with st.sidebar:
-    st.header("🤖 Assistente AI")
+    st.header("🤖 Victoria — Target ERP")
     st.markdown("Chiedi supporto o informazioni sui prodotti.")
     
     if "messages" not in st.session_state: 
@@ -21,21 +21,33 @@ with st.sidebar:
         with st.chat_message(msg["role"]): 
             st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Chiedi info..."):
+    # Usiamo un form per evitare problemi di sovrapposizione grafica
+    with st.form(key="chat_form", clear_on_submit=True):
+        prompt = st.text_input("Chiedi info...", label_visibility="collapsed")
+        submit_button = st.form_submit_button("Invia")
+
+    if submit_button and prompt:
         with st.chat_message("user"): 
             st.markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
         
         with st.chat_message("assistant"):
-            with st.spinner("L'IA sta elaborando..."):
+            with st.spinner("Elaborazione..."):
                 try:
+                    # Direttiva di sistema per forzare il nome Victoria
+                    system_directive = (
+                        "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
+                        "Se ti chiedono come ti chiami, rispondi che ti chiami Victoria. "
+                        "Non menzionare mai Google, Gemini o di essere un'intelligenza artificiale generica. "
+                    )
                     response = client.models.generate_content(
                         model="gemini-3.5-flash",
-                        contents=prompt
+                        contents=system_directive + prompt
                     )
                     risposta = response.text
                 except Exception as e:
                     risposta = f"Errore nella generazione: {e}"
+                
                 st.markdown(risposta)
         st.session_state.messages.append({"role": "assistant", "content": risposta})
 
