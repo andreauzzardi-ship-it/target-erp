@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 from google.genai import Client
 
-# Legge la chiave API in modo sicuro dalle impostazioni segrete di Streamlit Cloud
+# Questa riga legge la chiave dai 'Secrets' di Streamlit. 
+# Non scrivere mai la chiave qui dentro!
 client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-st.set_page_config(page_title="Target ERP - Smart Order & Quote Hub", layout="wide")
+st.set_page_config(page_title="Target ERP - Gestione Ordini & Offerte", page_icon="📦", layout="wide")
 st.title("📦 Target ERP — Smart Order & Quote Hub")
 
 # --- SIDEBAR: ASSISTENTE AI ---
@@ -39,12 +40,25 @@ with st.sidebar:
         st.session_state.messages.append({"role": "assistant", "content": risposta})
 
 # --- CONTENUTO PRINCIPALE ---
-st.subheader("Gestione Ordini e Articoli")
+tipo_doc = st.radio("Seleziona il tipo di documento:", ["🛒 Ordine Cliente", "📄 Offerta"], horizontal=True)
+
+# Tab di Input
+input_tab1, input_tab2 = st.tabs(["📄 Carica PDF / Immagine", "✉️ Incolla Testo Email"])
+with input_tab1: 
+    st.file_uploader("Trascina file", type=["pdf", "jpg", "jpeg"])
+with input_tab2: 
+    st.text_area("Incolla testo richiesta:", height=100)
+
+st.divider()
+
+# Dati e Revisione
 if "dati" not in st.session_state:
     st.session_state.dati = [
-        {"COD_ARTICOLO": "C-600", "DESCRIZIONE": "Connettore Rapido", "QUANTITA": 5},
-        {"COD_ARTICOLO": "A-100", "DESCRIZIONE": "Staffa di fissaggio", "QUANTITA": 12}
+        {"COD_CLIENTE": "CLI-001", "RAGIONE_SOCIALE": "Rossi S.R.L.", "COD_ARTICOLO": "C-600", "DESCRIZIONE": "Connettore Rapido", "QUANTITA": 5, "DATA_CONSEGNA": "2026-09-01"}
     ]
 
 df = pd.DataFrame(st.session_state.dati)
-edited_df = st.data_editor(df, use_container_width=True)
+edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
+
+csv = edited_df.to_csv(index=False, sep=';', encoding='utf-8-sig')
+st.download_button("⬇️ Esporta CSV", data=csv, file_name="EXPORT.csv", mime="text/csv")
