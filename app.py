@@ -125,13 +125,19 @@ with tab_text:
 
 st.divider()
 
-# --- CONTENUTO PRINCIPALE: TABELLA ED ESPORTAZIONE ---
+# --- CONTENUTO PRINCIPALE: TABELLA COMPLETA ED ESPORTAZIONE ---
 st.subheader("Gestione Ordini e Articoli")
 
 if "dati" not in st.session_state:
     st.session_state.dati = [
-        {"COD_ARTICOLO": "C-600", "DESCRIZIONE": "Connettore Rapido", "QUANTITA": 5},
-        {"COD_ARTICOLO": "A-100", "DESCRIZIONE": "Staffa di fissaggio", "QUANTITA": 12}
+        {
+            "COD_CLIENTE": "CLI-001",
+            "RAGIONE_SOCIALE": "Rossi S.R.L.",
+            "COD_ARTICOLO": "C-600",
+            "DESCRIZIONE": "Connettore Rapido",
+            "QUANTITA": 5,
+            "DATA_CONSEGNA": "2026-09-01"
+        }
     ]
 
 df = pd.DataFrame(st.session_state.dati)
