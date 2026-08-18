@@ -19,28 +19,31 @@ with tab_gestionale:
     st.title("Target ERP — Smart Order & Quote Hub")
     # Qui inserisci tutto il codice attuale dei documenti, upload file, tabelle ed export CSV
 
-# --- CHAT FLUTTUANTE STILE MESSENGER CON VICTORIA ---
-with st.sidebar:
-    st.divider() # Linea separatoria pulita
-    
-    # Creiamo il pulsante popover che apre la chat fluttuante
+import streamlit as st
+
+# --- INTESTAZIONE E CHAT A SCOMPARSA (SENZA SIDEBAR) ---
+col_titolo, col_chat = st.columns([3, 1])
+
+with col_titolo:
+    st.title("📦 Target ERP — Smart Order & Quote Hub")
+
+with col_chat:
+    # Pulsante a comparsa posizionato in alto a destra nella pagina
     with st.popover("💬 Chat con Victoria", use_container_width=True):
         st.subheader("🤖 Victoria — Target ERP")
         st.caption("Chiedi supporto o informazioni sui prodotti.")
         
-        # Contenitore per la cronologia dei messaggi
-        chat_container = st.container(height=300)
+        # Finestra della chat
+        chat_container = st.container(height=320)
         
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
-        # Mostra i messaggi passati dentro il rettangolo fluttuante
         with chat_container:
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-        # Input pulito e nativo che non si sovrappone
         if prompt := st.chat_input("Scrivi a Victoria..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             
@@ -49,7 +52,7 @@ with st.sidebar:
                     st.markdown(prompt)
 
                 with st.chat_message("assistant"):
-                    with st.spinner("Victoria sta scrivendo..."):
+                    with st.spinner("Victoria sta rispondendo..."):
                         try:
                             system_directive = (
                                 "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
@@ -57,7 +60,7 @@ with st.sidebar:
                                 "Non menzionare mai Google, Gemini o di essere un'IA generica. "
                             )
                             response = client.models.generate_content(
-                                model="gemini-3.6-flash",
+                                model="gemini-3.5-flash",
                                 contents=system_directive + prompt
                             )
                             risposta = response.text
@@ -66,6 +69,10 @@ with st.sidebar:
 
                         st.markdown(risposta)
             st.session_state.messages.append({"role": "assistant", "content": risposta})
+
+st.divider()
+
+# --- DA QUI IN POI CONTINUA IL TUO CODICE PER CARICAMENTO DOCS E TABELLE ---
 
 # --- CONTENUTO PRINCIPALE ---
 tipo_doc = st.radio("Seleziona il tipo di documento:", ["🛒 Ordine Cliente", "📄 Offerta"], horizontal=True)
