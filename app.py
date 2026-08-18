@@ -1,39 +1,23 @@
 import streamlit as st
-import pandas as pd
 from google.genai import Client
 
-# Questa riga legge la chiave dai 'Secrets' di Streamlit. 
-# Non scrivere mai la chiave qui dentro!
+# 1. Configurazione Pagina
+st.set_page_config(page_title="Target ERP", page_icon="📦", layout="wide")
+
+# 2. Inizializzazione Client Gemini
 client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-st.set_page_config(page_title="Target ERP - Gestione Ordini & Offerte", page_icon="📦", layout="wide")
-st.title("📦 Target ERP — Smart Order & Quote Hub")
-
-import streamlit as st
-
-# Creazione delle schede nella pagina principale
-tab_gestionale, tab_victoria = st.tabs(["📋 Gestione Documenti", "🤖 Victoria AI"])
-
-# --- TAB 1: GESTIONE ORDINI & OFFERTE ---
-with tab_gestionale:
-    st.title("Target ERP — Smart Order & Quote Hub")
-    # Qui inserisci tutto il codice attuale dei documenti, upload file, tabelle ed export CSV
-
-import streamlit as st
-
-# --- INTESTAZIONE E CHAT A SCOMPARSA (SENZA SIDEBAR) ---
+# 3. Intestazione Unica + Pulsante Chat Popover (Senza Sidebar)
 col_titolo, col_chat = st.columns([3, 1])
 
 with col_titolo:
     st.title("📦 Target ERP — Smart Order & Quote Hub")
 
 with col_chat:
-    # Pulsante a comparsa posizionato in alto a destra nella pagina
     with st.popover("💬 Chat con Victoria", use_container_width=True):
         st.subheader("🤖 Victoria — Target ERP")
         st.caption("Chiedi supporto o informazioni sui prodotti.")
         
-        # Finestra della chat
         chat_container = st.container(height=320)
         
         if "messages" not in st.session_state:
@@ -60,7 +44,7 @@ with col_chat:
                                 "Non menzionare mai Google, Gemini o di essere un'IA generica. "
                             )
                             response = client.models.generate_content(
-                                model="gemini-3.5-flash",
+                                model="gemini-3.6-flash",
                                 contents=system_directive + prompt
                             )
                             risposta = response.text
@@ -70,30 +54,33 @@ with col_chat:
                         st.markdown(risposta)
             st.session_state.messages.append({"role": "assistant", "content": risposta})
 
-st.divider()
+# --- SEZIONE SELEZIONE DOCUMENTO ---
+st.write("Seleziona il tipo di documento:")
+doc_type = st.radio(
+    "Seleziona il tipo di documento:", 
+    ["🛒 Ordine Cliente", "📋 Offerta"], 
+    horizontal=True, 
+    label_visibility="collapsed"
+)
 
-# --- DA QUI IN POI CONTINUA IL TUO CODICE PER CARICAMENTO DOCS E TABELLE ---
+# --- SEZIONE CARICAMENTO (PDF/IMMAGINE O EMAIL) ---
+tab_upload, tab_text = st.tabs(["📄 Carica PDF / Immagine", "✉️ Incolla Testo Email"])
 
-# --- CONTENUTO PRINCIPALE ---
-tipo_doc = st.radio("Seleziona il tipo di documento:", ["🛒 Ordine Cliente", "📄 Offerta"], horizontal=True)
+with tab_upload:
+    uploaded_file = st.file_uploader("Trascina file", type=["pdf", "jpg", "png"], label_visibility="collapsed")
 
-# Tab di Input
-input_tab1, input_tab2 = st.tabs(["📄 Carica PDF / Immagine", "✉️ Incolla Testo Email"])
-with input_tab1: 
-    st.file_uploader("Trascina file", type=["pdf", "jpg", "jpeg"])
-with input_tab2: 
-    st.text_area("Incolla testo richiesta:", height=100)
+with tab_text:
+    email_text = st.text_area("Incolla qui il testo dell'email o del documento...")
 
-st.divider()
+# --- TABELLA DATI ESTRATTI ---
+st.markdown("### Dati Estratti")
+st.dataframe({
+    "COD_CLIENTE": ["CLI-001"],
+    "RAGIONE_SOCIALE": ["Rossi S.R.L."],
+    "COD_ARTICOLO": ["C-600"],
+    "DESCRIZIONE": ["Connettore Rapido"],
+    "QUANTITA": [5],
+    "DATA_CONSEGNA": ["2026-09-01"]
+}, use_container_width=True)
 
-# Dati e Revisione
-if "dati" not in st.session_state:
-    st.session_state.dati = [
-        {"COD_CLIENTE": "CLI-001", "RAGIONE_SOCIALE": "Rossi S.R.L.", "COD_ARTICOLO": "C-600", "DESCRIZIONE": "Connettore Rapido", "QUANTITA": 5, "DATA_CONSEGNA": "2026-09-01"}
-    ]
-
-df = pd.DataFrame(st.session_state.dati)
-edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
-
-csv = edited_df.to_csv(index=False, sep=';', encoding='utf-8-sig')
-st.download_button("⬇️ Esporta CSV", data=csv, file_name="EXPORT.csv", mime="text/csv")
+st.button("📥 Esporta CSV")
