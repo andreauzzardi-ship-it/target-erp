@@ -20,14 +20,17 @@ with col_chat:
         
         chat_container = st.container(height=320)
         
+        # 1. Inizializzazione della cronologia messaggi
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
+        # 2. Mostra la cronologia nella finestra
         with chat_container:
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
+        # 3. Gestione dell'input utente
         if prompt := st.chat_input("Scrivi a Victoria..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             
@@ -38,22 +41,36 @@ with col_chat:
                 with st.chat_message("assistant"):
                     with st.spinner("Victoria sta rispondendo..."):
                         try:
-                            system_directive = (
-                                "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
-                                "Se ti chiedono come ti chiami, rispondi che ti chiami Victoria. "
-                                "Non menzionare mai Google, Gemini o di essere un'IA generica. "
+                            # Direttiva di sistema pulita ed esplicita
+                            system_instruction = (
+                                "Sei Victoria, l'assistente virtuale del software Target ERP. "
+                                "Rispondi in modo professionale, sintetico e diretto, senza ripetere le presentazioni "
+                                "o salutare ogni volta a meno che non sia l'inizio assoluto della conversazione. "
+                                "Non menzionare mai Google, Gemini o altre IA."
                             )
-                            response = client.models.generate_content(
-                                model="gemini-3.6-flash",
-                                contents=system_directive + prompt
+
+                            # Costruiamo la cronologia da passare al modello per mantenere il contesto
+                            history = [
+                                {"role": m["role"], "parts": [{"text": m["content"]}]} 
+                                for m in st.session_state.messages[:-1]
+                            ]
+
+                            # Creiamo la sessione di chat con le direttive di sistema vere e proprie
+                            chat = client.chats.create(
+                                model="gemini-3.5-flash",
+                                config={"system_instruction": system_instruction},
+                                history=history
                             )
+                            
+                            response = chat.send_message(prompt)
                             risposta = response.text
+
                         except Exception as e:
                             risposta = f"Errore nella generazione: {e}"
 
                         st.markdown(risposta)
+            
             st.session_state.messages.append({"role": "assistant", "content": risposta})
-
 # --- SEZIONE SELEZIONE DOCUMENTO ---
 st.write("Seleziona il tipo di documento:")
 doc_type = st.radio(
