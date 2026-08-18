@@ -6,11 +6,10 @@ from google.genai import Client
 # Configurazione pagina
 st.set_page_config(page_title="Target ERP - Smart Order & Quote Hub", layout="wide")
 
-# Recupero chiave API sicura dai secrets (o stringa diretta se preferisci)
-api_key = st.secrets.get("GOOGLE_API_KEY", "IL_TUO_API_KEY_QUI")
-client = Client(api_key=api_key)
+# Recupero SICURO della chiave API dai secrets di Streamlit
+client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# --- INTESTAZIONE + CHAT VICTORIA (POPOVER IN ALTO A DESTRA, NO SIDEBAR) ---
+# --- INTESTAZIONE + CHAT VICTORIA (POPOVER IN ALTO A DESTRA) ---
 col_titolo, col_chat = st.columns([3, 1])
 
 with col_titolo:
@@ -56,7 +55,7 @@ with col_chat:
                             )
 
                             chat = client.chats.create(
-                                model="gemini-3.5-flash",
+                                model="gemini-3.6-flash",
                                 config={"system_instruction": system_instruction},
                                 history=history
                             )
@@ -71,44 +70,58 @@ with col_chat:
             
             st.session_state.messages.append({"role": "assistant", "content": risposta})
 
-st.divider()
+# --- SEZIONE SELEZIONE TIPO DOCUMENTO ---
+st.write("Seleziona il tipo di documento:")
+doc_type = st.radio(
+    "Seleziona il tipo di documento:", 
+    ["🛒 Ordine Cliente", "📋 Offerta"], 
+    horizontal=True, 
+    label_visibility="collapsed"
+)
 
-# --- SEZIONE CARICAMENTO E ESTRAZIONE TESTO EMAIL ---
-st.subheader("Inserisci o Incolla Testo Email / Ordine")
-email_text = st.text_area("Incolla qui il testo dell'email da analizzare:", height=130)
+# --- SEZIONE CARICAMENTO CON TAB (PDF / IMMAGINE E EMAIL) ---
+tab_upload, tab_text = st.tabs(["📄 Carica PDF / Immagine", "✉️ Incolla Testo Email"])
 
-if st.button("⚡ Analizza Email ed Inserisci in Tabella", type="primary"):
-    if email_text.strip():
-        with st.spinner("Estrazione articoli e quantità dall'email..."):
-            try:
-                prompt_estrazione = f"""
-                Estragga le righe dell'ordine presenti nel testo fornito.
-                Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con queste tre chiavi esatte:
-                "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA" (come numero intero).
-                Se manca un codice, usa "N/D".
+with tab_upload:
+    uploaded_file = st.file_uploader("Trascina file", type=["pdf", "jpg", "png", "jpeg"], label_visibility="collapsed")
+    if uploaded_file and st.button("⚡ Analizza File", type="primary"):
+        with st.spinner("Elaborazione file in corso..."):
+            st.info("Funzionalità di lettura file (PDF/Immagini) pronta per l'integrazione.")
 
-                Testo:
-                {email_text}
-                """
-                
-                res = client.models.generate_content(
-                    model="gemini-3.5-flash",
-                    contents=prompt_estrazione,
-                    config={"response_mime_type": "application/json"}
-                )
-                
-                nuovi_dati = json.loads(res.text)
-                
-                # Aggiunge i nuovi dati alla sessione
-                if "dati" not in st.session_state:
-                    st.session_state.dati = []
-                
-                st.session_state.dati.extend(nuovi_dati)
-                st.success("Dati estratti e aggiunti alla tabella!")
-            except Exception as e:
-                st.error(f"Errore durante l'estrazione: {e}")
-    else:
-        st.warning("Incolla il testo dell'email prima di analizzare.")
+with tab_text:
+    email_text = st.text_area("Incolla qui il testo dell'email o del documento...", height=130)
+    
+    if st.button("⚡ Analizza Email ed Inserisci in Tabella", type="primary"):
+        if email_text.strip():
+            with st.spinner("Estrazione dati dall'email in corso..."):
+                try:
+                    prompt_estrazione = f"""
+                    Estragga le righe dell'ordine/offerta per un documento di tipo: {doc_type}.
+                    Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con queste tre chiavi esatte:
+                    "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA" (come numero intero).
+                    Se manca un codice, usa "N/D".
+
+                    Testo:
+                    {email_text}
+                    """
+                    
+                    res = client.models.generate_content(
+                        model="gemini-3.5-flash",
+                        contents=prompt_estrazione,
+                        config={"response_mime_type": "application/json"}
+                    )
+                    
+                    nuovi_dati = json.loads(res.text)
+                    
+                    if "dati" not in st.session_state:
+                        st.session_state.dati = []
+                    
+                    st.session_state.dati.extend(nuovi_dati)
+                    st.success("Dati estratti e aggiunti alla tabella!")
+                except Exception as e:
+                    st.error(f"Errore durante l'estrazione: {e}")
+        else:
+            st.warning("Incolla il testo prima di procedere con l'analisi.")
 
 st.divider()
 
@@ -124,7 +137,7 @@ if "dati" not in st.session_state:
 df = pd.DataFrame(st.session_state.dati)
 edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
 
-# Pulsante per scaricare la tabella aggiornata in CSV
+# Pulsante di esportazione CSV
 csv_data = edited_df.to_csv(index=False).encode('utf-8')
 st.download_button(
     label="📥 Esporta CSV Tabella",
