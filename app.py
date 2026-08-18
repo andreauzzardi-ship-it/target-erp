@@ -57,7 +57,7 @@ with st.sidebar:
                                 "Non menzionare mai Google, Gemini o di essere un'IA generica. "
                             )
                             response = client.models.generate_content(
-                                model="gemini-2.0-flash",
+                                model="gemini-3.6-flash",
                                 contents=system_directive + prompt
                             )
                             risposta = response.text
