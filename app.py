@@ -6,16 +6,26 @@ from google.genai import Client
 # Configurazione pagina
 st.set_page_config(page_title="Target ERP - Smart Order & Quote Hub", layout="wide")
 
-# Nasconde il badge e la barra di stato/toolbar di Streamlit in basso
-st.markdown("""
+#st.markdown("""
     <style>
-    /* Nasconde la toolbar/badge in basso a destra */
-    div[data-testid="stStatusWidget"],
-    .viewerBadge_container__1633t,
-    .styles_viewerBadge__1yB5_,
-    [data-testid="stDecoration"],
-    footer {
+    /* Nasconde footer, watermark, badge e toolbar di Streamlit Cloud */
+    footer,
+    #MainMenu,
+    header,
+    [data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    [data-testid="stStatusWidget"],
+    [data-testid="stActionButtonIcon"],
+    div[class*="viewerBadge"],
+    div[class*="styles_viewerBadge"],
+    a[class*="viewerBadge"],
+    iframe[title="streamlitApp"] + div {
         display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        width: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
     }
     </style>
 """, unsafe_allow_html=True)
