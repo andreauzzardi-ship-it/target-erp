@@ -9,36 +9,44 @@ client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 st.set_page_config(page_title="Target ERP - Gestione Ordini & Offerte", page_icon="📦", layout="wide")
 st.title("📦 Target ERP — Smart Order & Quote Hub")
 
-# --- SIDEBAR: ASSISTENTE VICTORIA ---
-with st.sidebar:
-    st.header("🤖 Victoria — Target ERP")
-    st.markdown("Chiedi supporto o informazioni sui prodotti.")
-    
-    if "messages" not in st.session_state: 
+import streamlit as st
+
+# Creazione delle schede nella pagina principale
+tab_gestionale, tab_victoria = st.tabs(["📋 Gestione Documenti", "🤖 Victoria AI"])
+
+# --- TAB 1: GESTIONE ORDINI & OFFERTE ---
+with tab_gestionale:
+    st.title("Target ERP — Smart Order & Quote Hub")
+    # Qui inserisci tutto il codice attuale dei documenti, upload file, tabelle ed export CSV
+
+# --- TAB 2: CHAT CON VICTORIA ---
+with tab_victoria:
+    st.header("Victoria — Assistente Target ERP")
+    st.caption("Chiedi supporto o informazioni sui prodotti.")
+
+    if "messages" not in st.session_state:
         st.session_state.messages = []
-    
+
+    # Mostra la cronologia messaggi
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]): 
+        with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Usiamo un form per evitare problemi di sovrapposizione grafica
-    with st.form(key="chat_form", clear_on_submit=True):
-        prompt = st.text_input("Chiedi info...", label_visibility="collapsed")
-        submit_button = st.form_submit_button("Invia")
-
-    if submit_button and prompt:
-        with st.chat_message("user"): 
+    # Utilizzo del chat_input nativo al centro della pagina (funziona alla perfezione nei tab)
+    if prompt := st.chat_input("Chiedi info a Victoria..."):
+        # Messaggio Utente
+        with st.chat_message("user"):
             st.markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
+
+        # Risposta Assistente
         with st.chat_message("assistant"):
-            with st.spinner("Elaborazione..."):
+            with st.spinner("Victoria sta elaborando..."):
                 try:
-                    # Direttiva di sistema per forzare il nome Victoria
                     system_directive = (
                         "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
                         "Se ti chiedono come ti chiami, rispondi che ti chiami Victoria. "
-                        "Non menzionare mai Google, Gemini o di essere un'intelligenza artificiale generica. "
+                        "Non menzionare mai Google, Gemini o di essere un'IA generica. "
                     )
                     response = client.models.generate_content(
                         model="gemini-3.5-flash",
@@ -47,7 +55,7 @@ with st.sidebar:
                     risposta = response.text
                 except Exception as e:
                     risposta = f"Errore nella generazione: {e}"
-                
+
                 st.markdown(risposta)
         st.session_state.messages.append({"role": "assistant", "content": risposta})
 
