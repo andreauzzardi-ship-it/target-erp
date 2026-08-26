@@ -94,44 +94,28 @@ with col_chat:
             
             st.session_state.messages.append({"role": "assistant", "content": risposta})
 
-# --- CARICAMENTO ANAGRAFICA CLIENTI DA EXCEL ---
+# --- CARICAMENTO SILENZIOSO CLIENTI DA EXCEL ---
 @st.cache_data
 def carica_clienti():
     try:
         df = pd.read_excel("clienti.xlsx")
+        # Pulizia nomi colonne (rimuove spazi vuoti accidentali)
+        df.columns = df.columns.str.strip()
         return df
-    except Exception as e:
-        # Se c'è un errore (file mancante, problema libreria, ecc.), non fa piantare l'app
-        return None
+    except Exception:
+        return pd.DataFrame()
 
 df_clienti = carica_clienti()
 
-if df_clienti is not None and not df_clienti.empty:
-    # Prende la prima colonna se 'RAGIONE_SOCIALE' non viene trovata
-    col_ragione = "RAGIONE_SOCIALE" if "RAGIONE_SOCIALE" in df_clienti.columns else df_clienti.columns[0]
-    RAGIONI_SOCIALI = df_clienti[col_ragione].dropna().tolist()
-else:
-    RAGIONI_SOCIALI = []
-
-# --- ANAGRAFICA CLIENTI IN SIDEBAR ---
-with st.sidebar:
-    st.header("👥 Anagrafica Clienti")
-    if df_clienti is not None and not df_clienti.empty:
-        st.success(f"Caricati {len(df_clienti)} clienti")
-        st.dataframe(df_clienti, use_container_width=True, hide_index=True)
-    else:
-        st.info("Nessun file 'clienti.xlsx' trovato o errore nel caricamento.")
-# --- SEZIONE SELEZIONE TIPO DOCUMENTO ---
-st.write("Seleziona il tipo di documento:")
-
-# --- SEZIONE SELEZIONE TIPO DOCUMENTO ---
-st.write("Seleziona il tipo di documento:")
-doc_type = st.radio(
-    "Seleziona il tipo di documento:", 
-    ["🛒 Ordine Cliente", "📋 Offerta"], 
-    horizontal=True, 
-    label_visibility="collapsed"
-)
+# Prepariamo la struttura dati da passare all'IA
+clienti_dict = []
+if not df_clienti.empty:
+    for _, row in df_clienti.iterrows():
+        # Cerca colonne flessibili per evitare errori di battitura nei titoli dell'Excel
+        cod = str(row.get("COD_CLIENTE", row.get("Codice", "N/D")))
+        rag = str(row.get("RAGIONE_SOCIALE", row.get("Cliente", row.get("Ragione Sociale", "N/D"))))
+        if rag != "N/D":
+            clienti_dict.append({"COD_CLIENTE": cod, "RAGIONE_SOCIALE": rag})
 
 # --- SEZIONE CARICAMENTO CON TAB (PDF / IMMAGINE E EMAIL) ---
 tab_upload, tab_text = st.tabs(["📄 Carica PDF / Immagine", "✉️ Incolla Testo Email"])
