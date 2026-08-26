@@ -240,18 +240,18 @@ if "dati" not in st.session_state:
         }
     ]
 
-# Estraiamo la lista delle Ragioni Sociali per il menu a tendina
+# Estraiamo la lista delle Ragioni Sociali convertendole tutte in stringa per evitare valori nulli o float
 lista_opzioni_clienti = []
 if not df_clienti.empty:
     col_rag = "RAGIONE_SOCIALE" if "RAGIONE_SOCIALE" in df_clienti.columns else df_clienti.columns[0]
-    lista_opzioni_clienti = df_clienti[col_rag].dropna().unique().tolist()
+    lista_opzioni_clienti = [str(x) for x in df_clienti[col_rag].dropna().unique().tolist() if str(x).strip()]
 
 df = pd.DataFrame(st.session_state.dati)
 
-# Configurazione della colonna RAGIONE_SOCIALE con ricerca/menu a tendina
+# Configurazione della colonna RAGIONE_SOCIALE con SelectboxColumn
 column_config = {}
 if lista_opzioni_clienti:
-    column_config["RAGIONE_SOCIALE"] = st.column_config.Selectbox(
+    column_config["RAGIONE_SOCIALE"] = st.column_config.SelectboxColumn(
         "RAGIONE_SOCIALE",
         help="Cerca e seleziona il cliente corretto dall'anagrafica Excel",
         options=lista_opzioni_clienti,
@@ -265,13 +265,18 @@ edited_df = st.data_editor(
     num_rows="dynamic"
 )
 
-# Aggiornamento del COD_CLIENTE basato sulla RAGIONE_SOCIALE scelta
+# Aggiornamento automatico del COD_CLIENTE in base alla RAGIONE_SOCIALE selezionata
 if not df_clienti.empty:
     col_cod = "COD_CLIENTE" if "COD_CLIENTE" in df_clienti.columns else None
     col_rag = "RAGIONE_SOCIALE" if "RAGIONE_SOCIALE" in df_clienti.columns else None
     if col_cod and col_rag:
-        mappa_clienti = dict(zip(df_clienti[col_rag], df_clienti[col_cod]))
-        edited_df["COD_CLIENTE"] = edited_df["RAGIONE_SOCIALE"].map(mappa_clienti).fillna(edited_df["COD_CLIENTE"])
+        # Convertiamo i campi in stringa per garantire il mapping
+        df_clienti_copy = df_clienti.copy()
+        df_clienti_copy[col_rag] = df_clienti_copy[col_rag].astype(str)
+        df_clienti_copy[col_cod] = df_clienti_copy[col_cod].astype(str)
+        
+        mappa_clienti = dict(zip(df_clienti_copy[col_rag], df_clienti_copy[col_cod]))
+        edited_df["COD_CLIENTE"] = edited_df["RAGIONE_SOCIALE"].astype(str).map(mappa_clienti).fillna(edited_df["COD_CLIENTE"])
 
 # Pulsante di esportazione CSV
 csv_data = edited_df.to_csv(index=False).encode('utf-8')
