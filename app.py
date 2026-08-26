@@ -34,26 +34,41 @@ def get_client():
 
 client = get_client()
 
-# ==============================================================================
-# LINK DEL LISTINO PDF PUBBLICO
-# Inserisci qui l'URL diretto al tuo file PDF del listino
+# # ==============================================================================
+# LINK DEL LISTINO PDF DA GOOGLE DRIVE O ALTRA FONTE
+# Inserisci qui il tuo link di Google Drive
 # ==============================================================================
 URL_LISTINO_PDF = "https://drive.google.com/drive/folders/1LL1qKf728tb0kXjTPbYZwpu6v7XXiv8H" 
 
 @st.cache_resource
 def carica_pdf_listino_online(url):
-    """Scarica il PDF dal link pubblico e lo carica su Google GenAI per Victoria."""
-    if not client or not url or "esempio.com" in url:
+    """Scarica il PDF dal link (inclusi i link di Google Drive) e lo carica su Google GenAI per Victoria."""
+    if not client or not url or "esempio.com" in url or "IL_TUO_ID_FILE" in url:
         return None
     try:
+        # Se è un link di Google Drive, convertilo automaticamente in link di download diretto
+        match = re.search(r'/d/([a-zA-Z0-9_-]+)', url) or re.search(r'id=([a-zA-Z0-9_-]+)', url)
+        if "drive.google.com" in url and match:
+            file_id = match.group(1)
+            url = f"https://drive.google.com/uc?export=download&id={file_id}"
+
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as response:
             pdf_bytes = response.read()
 
+        # Verifica che il contenuto scaricato sia effettivamente un PDF (inizia con %PDF)
+        if not pdf_bytes.startswith(b'%PDF'):
+            st.sidebar.error("Il link fornito non restituisce un PDF valido. Assicurati che su Google Drive i permessi siano impostati su 'Chiunque abbia il link'.")
+            return None
+
+        pdf_file_obj = io.BytesIO(pdf_bytes)
+
         file_obj = client.files.upload(
-            file=pdf_bytes,
-            mime_type="application/pdf",
-            config={"display_name": "Listino_Ufficiale.pdf"}
+            file=pdf_file_obj,
+            config={
+                "display_name": "Listino_Ufficiale.pdf",
+                "mime_type": "application/pdf"
+            }
         )
         return file_obj
     except Exception as e:
@@ -83,7 +98,7 @@ def genera_contenuto_con_fallback(contents, json_mode=False):
         else:
             raise e
 
-# --- CARICAMENTO ANAGRAFICHE EXCEL ---
+# --- CARICAMENTO ANAGRAFICHE EXCEL (Usate SOLO per la tabella ordini/offerte) ---
 @st.cache_data
 def carica_anagrafica(nome_file):
     try:
@@ -140,39 +155,6 @@ if col_desc_trovata:
 elenco_ragioni_sociali = json.dumps(lista_opzioni_clienti, ensure_ascii=False)
 elenco_codici_articoli = json.dumps(lista_opzioni_articoli, ensure_ascii=False)
 
-# --- ALGORITMO DI RICERCA FLESSIBILE ---
-def cerca_articoli_simili(query, max_risultati=10):
-    if df_articoli.empty or not col_desc_trovata or not col_art_trovata:
-        return []
-    
-    parole = [p.lower() for p in re.findall(r'\w+', query) if len(p) >= 2]
-    if not parole:
-        return []
-
-    risultati = []
-    for _, row in df_articoli.iterrows():
-        desc = str(row[col_desc_trovata]).strip()
-        cod = str(row[col_art_trovata]).strip()
-        desc_lower = desc.lower()
-        cod_lower = cod.lower()
-        
-        punteggio = 0
-        for p in parole:
-            if p in desc_lower or p in cod_lower:
-                punteggio += 2
-            elif len(p) >= 3 and any(token.startswith(p[:3]) for token in re.findall(r'\w+', desc_lower)):
-                punteggio += 1
-
-        if punteggio > 0:
-            risultati.append({
-                "codice": cod,
-                "descrizione": desc,
-                "punteggio": punteggio
-            })
-            
-    risultati.sort(key=lambda x: x["punteggio"], reverse=True)
-    return risultati[:max_risultati]
-
 def trova_ragione_sociale_valida(testo_estratto):
     if not testo_estratto or testo_estratto in ["N/D", ""]:
         return ""
@@ -198,7 +180,7 @@ with col_titolo:
 with col_chat:
     with st.popover("💬 Chat con Victoria", use_container_width=True):
         st.subheader("🤖 Victoria — Target ERP")
-        st.caption("Chiedi supporto o informazioni sui prodotti.")
+        st.caption("Chiedi informazioni sui prodotti del listino.")
         
         chat_container = st.container(height=300)
         
@@ -210,7 +192,7 @@ with col_chat:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-        if prompt := st.chat_input("Chiedi info a Victoria..."):
+        if prompt := st.chat_input("Chiedi info sui prodotti..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             
             with chat_container:
@@ -219,34 +201,24 @@ with col_chat:
 
                 with st.chat_message("assistant"):
                     with st.spinner("Victoria sta consultando il listino..."):
-                        articoli_trovati = cerca_articoli_simili(prompt)
-                        
-                        if articoli_trovati:
-                            info_catalogo = "\n\nARTICOLI RILEVATI IN ANAGRAFICA EXCEL:\n" + "\n".join(
-                                [f"- Codice: {a['codice']} | Descrizione: {a['descrizione']}" for a in articoli_trovati]
-                            )
-                        else:
-                            info_catalogo = "\n\nNessun articolo direttamente corrispondente trovato nell'anagrafica Excel."
-
                         system_instruction = (
                             "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
-                            "Hai accesso al listino prezzi e alla documentazione in allegato PDF. "
-                            "Rispondi in modo professionale, chiaro e sintetico, senza ripetere presentazioni ad ogni messaggio. "
+                            "Per le tue risposte devi consultare ESCLUSIVAMENTE il documento PDF del listino prezzi allegato. "
+                            "Non fare riferimento a file Excel o anagrafiche esterne. "
+                            "Rispondi in modo professionale, chiaro e sintetico. "
                             "Se ti chiedono chi ti ha creata o sviluppata, rispondi che sei stata creata da Andrea Uzzardi. "
-                            "Non menzionare mai Google, Gemini o di essere un'IA generica.\n"
-                            "Utilizza sia la documentazione allegata sia le informazioni tratte dall'anagrafica Excel "
-                            "per fornire all'utente i prezzi, le descrizioni e i codici articolo corretto."
+                            "Non menzionare mai Google, Gemini o di essere un'IA generica."
                         )
 
                         # Carica il PDF del listino online se configurato
                         pdf_listino_file = carica_pdf_listino_online(URL_LISTINO_PDF)
 
-                        # Prepariamo la lista dei contenuti per la richiesta
+                        # Prepariamo la lista dei contenuti per Victoria (solo PDF e Prompt dell'utente)
                         contenuto_messaggio = []
                         if pdf_listino_file:
                             contenuto_messaggio.append(pdf_listino_file)
                         
-                        contenuto_messaggio.append(f"{prompt}\n{info_catalogo}")
+                        contenuto_messaggio.append(prompt)
 
                         try:
                             chat = client.chats.create(
