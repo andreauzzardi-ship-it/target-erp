@@ -32,7 +32,7 @@ iframe[title="streamlitApp"] + div {
 # Recupero della chiave API dai secrets di Streamlit
 client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# --- INTESTAZIONE + CHAT VICTORIA (POPOVER IN ALTO A DESTRA) ---
+# --- INTESTAZIONE + CHAT VICTORIA ---
 col_titolo, col_chat = st.columns([3, 1])
 
 with col_titolo:
@@ -94,21 +94,22 @@ with col_chat:
             
             st.session_state.messages.append({"role": "assistant", "content": risposta})
 
-# --- CARICAMENTO SILENZIOSO CLIENTI DA EXCEL ---
+# --- CARICAMENTO ANAGRAFICHE EXCEL ---
 @st.cache_data
-def carica_clienti():
+def carica_anagrafica(nome_file):
     try:
-        df = pd.read_excel("clienti.xlsx")
-        df.columns = df.columns.str.strip()
+        df = pd.read_excel(nome_file)
+        df.columns = df.columns.astype(str).str.strip()
         return df
     except Exception:
         return pd.DataFrame()
 
-df_clienti = carica_clienti()
+df_clienti = carica_anagrafica("clienti.xlsx")
+df_articoli = carica_anagrafica("articoli.xlsx")
 
-# Identificazione colonne clienti
+# Identificatione colonne e liste opzioni per CLIENTE
 col_rag_trovata = None
-col_cod_trovato = None
+col_cod_cli_trovato = None
 lista_opzioni_clienti = []
 
 if not df_clienti.empty:
@@ -117,13 +118,34 @@ if not df_clienti.empty:
         if c_upper in ["RAGIONE_SOCIALE", "RAGIONE SOCIALE", "CLIENTE", "NOME"]:
             col_rag_trovata = col
         elif c_upper in ["COD_CLIENTE", "CODICE", "CODICE CLIENTE"]:
-            col_cod_trovato = col
+            col_cod_cli_trovato = col
 
     if col_rag_trovata:
         lista_opzioni_clienti = [str(x).strip() for x in df_clienti[col_rag_trovata].dropna().unique() if str(x).strip()]
 
-# Elenco ragioni sociali in formato stringa per il prompt dell'IA
+# Identificazione colonne per ARTICOLI con le intestazioni specifiche (Codart, Descrizione articolo)
+col_art_trovata = "Codart" if "Codart" in df_articoli.columns else None
+col_desc_trovata = "Descrizione articolo" if "Descrizione articolo" in df_articoli.columns else None
+
+# Fallback in caso di variazioni di maiuscole/minuscole
+if not col_art_trovata and not df_articoli.empty:
+    for col in df_articoli.columns:
+        if col.lower().strip() == "codart":
+            col_art_trovata = col
+            break
+
+if not col_desc_trovata and not df_articoli.empty:
+    for col in df_articoli.columns:
+        if "descrizione" in col.lower():
+            col_desc_trovata = col
+            break
+
+lista_opzioni_articoli = []
+if col_art_trovata:
+    lista_opzioni_articoli = [str(x).strip() for x in df_articoli[col_art_trovata].dropna().unique() if str(x).strip()]
+
 elenco_ragioni_sociali = json.dumps(lista_opzioni_clienti, ensure_ascii=False)
+elenco_codici_articoli = json.dumps(lista_opzioni_articoli, ensure_ascii=False)
 
 # --- SEZIONE SELEZIONE TIPO DOCUMENTO ---
 st.write("Seleziona il tipo di documento:")
@@ -137,6 +159,25 @@ doc_type = st.radio(
 # --- SEZIONE CARICAMENTO CON TAB (PDF / IMMAGINE E EMAIL) ---
 tab_upload, tab_text = st.tabs(["📄 Carica PDF / Immagine", "✉️ Incolla Testo Email"])
 
+prompt_base_estrazione = f"""
+Analizza la richiesta per un documento di tipo: {doc_type}.
+
+ELENCO RAGIONI SOCIALI CLIENTE VALIDE:
+{elenco_ragioni_sociali}
+
+ELENCO CODICI ARTICOLI VALIDI (Codart):
+{elenco_codici_articoli}
+
+ISTRUZIONI PER L'ESTRAZIONE:
+1. Trova il cliente e seleziona la RAGIONE_SOCIALE ESATTA dall'elenco clienti fornito sopra. Se non la trovi, usa "".
+2. Per ogni riga d'ordine/articolo trovata, assegna il COD_ARTICOLO ESATTO dal campo Codart presente nell'elenco articoli fornito sopra. Se non trovi il codice esatto, inserisci il codice o testo trovato nel documento.
+3. Estrai la DESCRIZIONE dell'articolo, la QUANTITA (numero intero) e la DATA_CONSEGNA se presenti.
+
+Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con esattamente queste chiavi:
+"COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
+Per i campi mancanti o non trovati usa "N/D" (tranne RAGIONE_SOCIALE dove usi "").
+"""
+
 with tab_upload:
     uploaded_file = st.file_uploader(
         "Trascina file (PDF o Immagine)", 
@@ -149,29 +190,13 @@ with tab_upload:
                 file_bytes = uploaded_file.read()
                 mime_type = uploaded_file.type
                 
-                prompt_estrazione = f"""
-                Analizza il documento allegato ({doc_type}).
-                
-                ELENCO RAGIONI SOCIALI VALIDE:
-                {elenco_ragioni_sociali}
-
-                ISTRUZIONI RIGIDE PER IL CLIENTE:
-                1. Trova il nome del cliente nel documento.
-                2. Scegli la stringa ESATTA che corrisponde al cliente dall'ELENCO RAGIONI SOCIALI VALIDE fornito sopra.
-                3. La chiave "RAGIONE_SOCIALE" DEVE contenere ESATTAMENTE una delle stringhe dell'elenco (rispetta maiuscole, spazi e punteggiatura). Se non trovi alcuna corrispondenza plausibile, usa "".
-                
-                Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con queste chiavi:
-                "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
-                Se "QUANTITA" è presente convertilo in numero intero. Per campi non trovati usa "N/D" (tranne RAGIONE_SOCIALE dove usi "").
-                """
-
                 from google.genai import types
                 
                 res = client.models.generate_content(
                     model="gemini-3.5-flash",
                     contents=[
                         types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-                        prompt_estrazione
+                        prompt_base_estrazione
                     ],
                     config={"response_mime_type": "application/json"}
                 )
@@ -195,28 +220,11 @@ with tab_text:
         if email_text.strip():
             with st.spinner("Estrazione dati dall'email in corso..."):
                 try:
-                    prompt_estrazione = f"""
-                    Analizza il testo seguente per un documento di tipo: {doc_type}.
-                    
-                    ELENCO RAGIONI SOCIALI VALIDE:
-                    {elenco_ragioni_sociali}
-
-                    ISTRUZIONI RIGIDE PER IL CLIENTE:
-                    1. Trova il nome del cliente nel testo.
-                    2. Scegli la stringa ESATTA che corrisponde al cliente dall'ELENCO RAGIONI SOCIALI VALIDE fornito sopra.
-                    3. La chiave "RAGIONE_SOCIALE" DEVE contenere ESATTAMENTE una delle stringhe dell'elenco (rispetta maiuscole, spazi e punteggiatura). Se non trovi alcuna corrispondenza plausibile, usa "".
-
-                    Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con queste chiavi:
-                    "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
-                    Se "QUANTITA" è presente convertilo in numero intero. Per campi non trovati usa "N/D" (tranne RAGIONE_SOCIALE dove usi "").
-
-                    Testo:
-                    {email_text}
-                    """
+                    full_prompt = f"{prompt_base_estrazione}\n\nTesto:\n{email_text}"
                     
                     res = client.models.generate_content(
                         model="gemini-3.5-flash",
-                        contents=prompt_estrazione,
+                        contents=full_prompt,
                         config={"response_mime_type": "application/json"}
                     )
                     
@@ -243,7 +251,7 @@ if "dati" not in st.session_state:
 
 colonne_tabella = ["COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA"]
 
-# Costruzione e pulizia del DataFrame
+# Costruzione DataFrame
 if st.session_state.dati:
     df = pd.DataFrame(st.session_state.dati)
     for col in colonne_tabella:
@@ -252,23 +260,42 @@ if st.session_state.dati:
 else:
     df = pd.DataFrame(columns=colonne_tabella)
 
-# Applicazione del mapping COD_CLIENTE automatico sui dati esistenti
-if not df.empty and not df_clienti.empty and col_rag_trovata and col_cod_trovato:
-    df_copy = df_clienti.copy()
-    df_copy[col_rag_trovata] = df_copy[col_rag_trovata].astype(str).str.strip()
-    df_copy[col_cod_trovato] = df_copy[col_cod_trovato].astype(str).str.strip()
-    mappa_clienti = dict(zip(df_copy[col_rag_trovata], df_copy[col_cod_trovato]))
-    
-    # Assegna automaticamente il COD_CLIENTE corrispondente alla RAGIONE_SOCIALE
-    df["COD_CLIENTE"] = df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_clienti).fillna(df["COD_CLIENTE"])
+# Applicazione mapping automatici CLIENTE ed ARTICOLI sui dati in entrata
+if not df.empty:
+    # Auto-compilazione COD_CLIENTE da RAGIONE_SOCIALE
+    if not df_clienti.empty and col_rag_trovata and col_cod_cli_trovato:
+        df_c = df_clienti.copy()
+        df_c[col_rag_trovata] = df_c[col_rag_trovata].astype(str).str.strip()
+        df_c[col_cod_cli_trovato] = df_c[col_cod_cli_trovato].astype(str).str.strip()
+        mappa_cli = dict(zip(df_c[col_rag_trovata], df_c[col_cod_cli_trovato]))
+        df["COD_CLIENTE"] = df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_cli).fillna(df["COD_CLIENTE"])
 
-# Configurazione colonna RAGIONE_SOCIALE con SelectboxColumn
+    # Auto-compilazione DESCRIZIONE da Codart
+    if not df_articoli.empty and col_art_trovata and col_desc_trovata:
+        df_a = df_articoli.copy()
+        df_a[col_art_trovata] = df_a[col_art_trovata].astype(str).str.strip()
+        df_a[col_desc_trovata] = df_a[col_desc_trovata].astype(str).str.strip()
+        mappa_art = dict(zip(df_a[col_art_trovata], df_a[col_desc_trovata]))
+        
+        desc_mappata = df["COD_ARTICOLO"].astype(str).str.strip().map(mappa_art)
+        df["DESCRIZIONE"] = df["DESCRIZIONE"].replace(["N/D", "", None], pd.NA).fillna(desc_mappata).fillna("N/D")
+
+# Configurazione colonne con SelectboxColumn (Menu a tendina per Cliente e Articolo)
 column_config = {}
+
 if lista_opzioni_clienti:
     column_config["RAGIONE_SOCIALE"] = st.column_config.SelectboxColumn(
         "RAGIONE_SOCIALE",
-        help="Fai doppio clic per cercare e selezionare il cliente",
+        help="Cerca o seleziona la Ragione Sociale del Cliente",
         options=lista_opzioni_clienti,
+        required=False
+    )
+
+if lista_opzioni_articoli:
+    column_config["COD_ARTICOLO"] = st.column_config.SelectboxColumn(
+        "COD_ARTICOLO (Codart)",
+        help="Cerca o seleziona il Codart dall'anagrafica articoli",
+        options=lista_opzioni_articoli,
         required=False
     )
 
@@ -280,19 +307,39 @@ edited_df = st.data_editor(
     key="editor_tabella"
 )
 
-# Sincronizzazione modifiche manuali o da menu a tendina
-if not edited_df.empty and not df_clienti.empty and col_rag_trovata and col_cod_trovato:
-    df_copy = df_clienti.copy()
-    df_copy[col_rag_trovata] = df_copy[col_rag_trovata].astype(str).str.strip()
-    df_copy[col_cod_trovato] = df_copy[col_cod_trovato].astype(str).str.strip()
-    mappa_clienti = dict(zip(df_copy[col_rag_trovata], df_copy[col_cod_trovato]))
-    
-    nuovi_codici = edited_df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_clienti)
-    
-    if "COD_CLIENTE" in edited_df.columns and not edited_df["COD_CLIENTE"].equals(nuovi_codici.fillna(edited_df["COD_CLIENTE"])):
-        edited_df["COD_CLIENTE"] = nuovi_codici.fillna(edited_df["COD_CLIENTE"])
-        st.session_state.dati = edited_df.to_dict(orient="records")
-        st.rerun()
+# Gestione delle modifiche interattive nella tabella
+richiede_rerun = False
+
+if not edited_df.empty:
+    # 1. Aggiorna COD_CLIENTE se cambia RAGIONE_SOCIALE
+    if not df_clienti.empty and col_rag_trovata and col_cod_cli_trovato:
+        df_c = df_clienti.copy()
+        df_c[col_rag_trovata] = df_c[col_rag_trovata].astype(str).str.strip()
+        df_c[col_cod_cli_trovato] = df_c[col_cod_cli_trovato].astype(str).str.strip()
+        mappa_cli = dict(zip(df_c[col_rag_trovata], df_c[col_cod_cli_trovato]))
+        
+        nuovi_codici_cli = edited_df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_cli)
+        if "COD_CLIENTE" in edited_df.columns and not edited_df["COD_CLIENTE"].equals(nuovi_codici_cli.fillna(edited_df["COD_CLIENTE"])):
+            edited_df["COD_CLIENTE"] = nuovi_codici_cli.fillna(edited_df["COD_CLIENTE"])
+            richiede_rerun = True
+
+    # 2. Aggiorna DESCRIZIONE se cambia COD_ARTICOLO (usando Codart -> Descrizione articolo)
+    if not df_articoli.empty and col_art_trovata and col_desc_trovata:
+        df_a = df_articoli.copy()
+        df_a[col_art_trovata] = df_a[col_art_trovata].astype(str).str.strip()
+        df_a[col_desc_trovata] = df_a[col_desc_trovata].astype(str).str.strip()
+        mappa_art = dict(zip(df_a[col_art_trovata], df_a[col_desc_trovata]))
+        
+        nuove_desc = edited_df["COD_ARTICOLO"].astype(str).str.strip().map(mappa_art)
+        if "DESCRIZIONE" in edited_df.columns:
+            condizione_cambio = (~nuove_desc.isna()) & (edited_df["DESCRIZIONE"] != nuove_desc)
+            if condizione_cambio.any():
+                edited_df.loc[condizione_cambio, "DESCRIZIONE"] = nuove_desc[condizione_cambio]
+                richiede_rerun = True
+
+if richiede_rerun:
+    st.session_state.dati = edited_df.to_dict(orient="records")
+    st.rerun()
 else:
     st.session_state.dati = edited_df.to_dict(orient="records")
 
