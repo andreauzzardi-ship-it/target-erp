@@ -29,7 +29,7 @@ iframe[title="streamlitApp"] + div {
 </style>
 """, unsafe_allow_html=True)
 
-# Recupero SICURO della chiave API dai secrets di Streamlit
+# Recupero della chiave API dai secrets di Streamlit
 client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
 # --- INTESTAZIONE + CHAT VICTORIA (POPOVER IN ALTO A DESTRA) ---
@@ -106,16 +106,24 @@ def carica_clienti():
 
 df_clienti = carica_clienti()
 
-# Stringa ultra-compatta per risparmiare token
-clienti_str = ""
+# Identificazione colonne clienti
+col_rag_trovata = None
+col_cod_trovato = None
+lista_opzioni_clienti = []
+
 if not df_clienti.empty:
-    elenco = []
-    for _, row in df_clienti.iterrows():
-        cod = str(row.get("COD_CLIENTE", row.get("Codice", "N/D")))
-        rag = str(row.get("RAGIONE_SOCIALE", row.get("Cliente", row.get("Ragione Sociale", "N/D"))))
-        if rag != "N/D":
-            elenco.append(f"{cod}:{rag}")
-    clienti_str = ", ".join(elenco)
+    for col in df_clienti.columns:
+        c_upper = col.upper().strip()
+        if c_upper in ["RAGIONE_SOCIALE", "RAGIONE SOCIALE", "CLIENTE", "NOME"]:
+            col_rag_trovata = col
+        elif c_upper in ["COD_CLIENTE", "CODICE", "CODICE CLIENTE"]:
+            col_cod_trovato = col
+
+    if col_rag_trovata:
+        lista_opzioni_clienti = [str(x).strip() for x in df_clienti[col_rag_trovata].dropna().unique() if str(x).strip()]
+
+# Elenco ragioni sociali in formato stringa per il prompt dell'IA
+elenco_ragioni_sociali = json.dumps(lista_opzioni_clienti, ensure_ascii=False)
 
 # --- SEZIONE SELEZIONE TIPO DOCUMENTO ---
 st.write("Seleziona il tipo di documento:")
@@ -142,19 +150,19 @@ with tab_upload:
                 mime_type = uploaded_file.type
                 
                 prompt_estrazione = f"""
-                Estragga le righe dell'ordine/offerta dal documento allegato per un documento di tipo: {doc_type}.
+                Analizza il documento allegato ({doc_type}).
                 
-                ELENCO CLIENTI (CODICE:RAGIONE_SOCIALE):
-                {clienti_str}
+                ELENCO RAGIONI SOCIALI VALIDE:
+                {elenco_ragioni_sociali}
 
-                REGOLE ESSENZIALI CLIENTI:
-                1. Confronta il nome del cliente trovato nel file con l'ELENCO CLIENTI qui sopra.
-                2. Imposta il "RAGIONE_SOCIALE" e "COD_CLIENTE" esatti dall'anagrafica se trovi una corrispondenza.
+                ISTRUZIONI RIGIDE PER IL CLIENTE:
+                1. Trova il nome del cliente nel documento.
+                2. Scegli la stringa ESATTA che corrisponde al cliente dall'ELENCO RAGIONI SOCIALI VALIDE fornito sopra.
+                3. La chiave "RAGIONE_SOCIALE" DEVE contenere ESATTAMENTE una delle stringhe dell'elenco (rispetta maiuscole, spazi e punteggiatura). Se non trovi alcuna corrispondenza plausibile, usa "".
                 
-                Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con esattamente queste chiavi:
+                Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con queste chiavi:
                 "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
-                Se qualche dato non è presente nel testo, inserisci "N/D".
-                La QUANTITA deve essere un numero intero.
+                Se "QUANTITA" è presente convertilo in numero intero. Per campi non trovati usa "N/D" (tranne RAGIONE_SOCIALE dove usi "").
                 """
 
                 from google.genai import types
@@ -175,6 +183,7 @@ with tab_upload:
 
                 st.session_state.dati.extend(nuovi_dati)
                 st.success("Dati estratti dal file e aggiunti alla tabella!")
+                st.rerun()
 
             except Exception as e:
                 st.error(f"Errore durante l'analisi del file: {e}")
@@ -187,19 +196,19 @@ with tab_text:
             with st.spinner("Estrazione dati dall'email in corso..."):
                 try:
                     prompt_estrazione = f"""
-                    Estragga le righe dell'ordine/offerta per un documento di tipo: {doc_type}.
+                    Analizza il testo seguente per un documento di tipo: {doc_type}.
                     
-                    ELENCO CLIENTI (CODICE:RAGIONE_SOCIALE):
-                    {clienti_str}
+                    ELENCO RAGIONI SOCIALI VALIDE:
+                    {elenco_ragioni_sociali}
 
-                    REGOLE ESSENZIALI CLIENTI:
-                    1. Confronta il nome del cliente trovato nel testo con l'ELENCO CLIENTI qui sopra.
-                    2. Imposta il "RAGIONE_SOCIALE" e "COD_CLIENTE" esatti dall'anagrafica se trovi una corrispondenza.
+                    ISTRUZIONI RIGIDE PER IL CLIENTE:
+                    1. Trova il nome del cliente nel testo.
+                    2. Scegli la stringa ESATTA che corrisponde al cliente dall'ELENCO RAGIONI SOCIALI VALIDE fornito sopra.
+                    3. La chiave "RAGIONE_SOCIALE" DEVE contenere ESATTAMENTE una delle stringhe dell'elenco (rispetta maiuscole, spazi e punteggiatura). Se non trovi alcuna corrispondenza plausibile, usa "".
 
-                    Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con esattamente queste chiavi:
+                    Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con queste chiavi:
                     "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
-                    Se manca un dato o codice, usa "N/D".
-                    La QUANTITA deve essere un numero intero.
+                    Se "QUANTITA" è presente convertilo in numero intero. Per campi non trovati usa "N/D" (tranne RAGIONE_SOCIALE dove usi "").
 
                     Testo:
                     {email_text}
@@ -218,6 +227,7 @@ with tab_text:
                     
                     st.session_state.dati.extend(nuovi_dati)
                     st.success("Dati estratti e aggiunti alla tabella!")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Errore durante l'estrazione: {e}")
         else:
@@ -228,32 +238,29 @@ st.divider()
 # --- CONTENUTO PRINCIPALE: TABELLA COMPLETA ED ESPORTAZIONE ---
 st.subheader("Gestione Ordini e Articoli")
 
-# Inizializziamo la tabella vuota (senza dati di prova)
 if "dati" not in st.session_state:
     st.session_state.dati = []
 
-# Estrazione sicura delle Ragioni Sociali e mappatura dall'anagrafica Excel
-lista_opzioni_clienti = []
-col_rag_trovata = None
-col_cod_trovato = None
-
-if not df_clienti.empty:
-    for col in df_clienti.columns:
-        c_upper = col.upper().strip()
-        if c_upper in ["RAGIONE_SOCIALE", "RAGIONE SOCIALE", "CLIENTE", "NOME"]:
-            col_rag_trovata = col
-        elif c_upper in ["COD_CLIENTE", "CODICE", "CODICE CLIENTE"]:
-            col_cod_trovato = col
-
-    if col_rag_trovata:
-        lista_opzioni_clienti = [str(x).strip() for x in df_clienti[col_rag_trovata].dropna().unique() if str(x).strip()]
-
-# Creazione DataFrame con colonne predefinite se lo stato è vuoto
 colonne_tabella = ["COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA"]
+
+# Costruzione e pulizia del DataFrame
 if st.session_state.dati:
     df = pd.DataFrame(st.session_state.dati)
+    for col in colonne_tabella:
+        if col not in df.columns:
+            df[col] = ""
 else:
     df = pd.DataFrame(columns=colonne_tabella)
+
+# Applicazione del mapping COD_CLIENTE automatico sui dati esistenti
+if not df.empty and not df_clienti.empty and col_rag_trovata and col_cod_trovato:
+    df_copy = df_clienti.copy()
+    df_copy[col_rag_trovata] = df_copy[col_rag_trovata].astype(str).str.strip()
+    df_copy[col_cod_trovato] = df_copy[col_cod_trovato].astype(str).str.strip()
+    mappa_clienti = dict(zip(df_copy[col_rag_trovata], df_copy[col_cod_trovato]))
+    
+    # Assegna automaticamente il COD_CLIENTE corrispondente alla RAGIONE_SOCIALE
+    df["COD_CLIENTE"] = df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_clienti).fillna(df["COD_CLIENTE"])
 
 # Configurazione colonna RAGIONE_SOCIALE con SelectboxColumn
 column_config = {}
@@ -262,7 +269,7 @@ if lista_opzioni_clienti:
         "RAGIONE_SOCIALE",
         help="Fai doppio clic per cercare e selezionare il cliente",
         options=lista_opzioni_clienti,
-        required=True
+        required=False
     )
 
 edited_df = st.data_editor(
@@ -273,17 +280,15 @@ edited_df = st.data_editor(
     key="editor_tabella"
 )
 
-# Aggiornamento automatico del COD_CLIENTE quando viene scelta la RAGIONE_SOCIALE
+# Sincronizzazione modifiche manuali o da menu a tendina
 if not edited_df.empty and not df_clienti.empty and col_rag_trovata and col_cod_trovato:
     df_copy = df_clienti.copy()
     df_copy[col_rag_trovata] = df_copy[col_rag_trovata].astype(str).str.strip()
     df_copy[col_cod_trovato] = df_copy[col_cod_trovato].astype(str).str.strip()
-    
     mappa_clienti = dict(zip(df_copy[col_rag_trovata], df_copy[col_cod_trovato]))
     
     nuovi_codici = edited_df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_clienti)
     
-    # Se il codice cliente non corrisponde alla ragione sociale selezionata, aggiorna e ricarica
     if "COD_CLIENTE" in edited_df.columns and not edited_df["COD_CLIENTE"].equals(nuovi_codici.fillna(edited_df["COD_CLIENTE"])):
         edited_df["COD_CLIENTE"] = nuovi_codici.fillna(edited_df["COD_CLIENTE"])
         st.session_state.dati = edited_df.to_dict(orient="records")
