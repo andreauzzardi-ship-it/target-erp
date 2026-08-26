@@ -1,5 +1,7 @@
 import json
 import re
+import io
+import urllib.request
 import pandas as pd
 import streamlit as st
 from google.genai import Client, types
@@ -31,6 +33,32 @@ def get_client():
         return None
 
 client = get_client()
+
+# ==============================================================================
+# LINK DEL LISTINO PDF PUBBLICO
+# Inserisci qui l'URL diretto al tuo file PDF del listino
+# ==============================================================================
+URL_LISTINO_PDF = "https://drive.google.com/drive/folders/1LL1qKf728tb0kXjTPbYZwpu6v7XXiv8H" 
+
+@st.cache_resource
+def carica_pdf_listino_online(url):
+    """Scarica il PDF dal link pubblico e lo carica su Google GenAI per Victoria."""
+    if not client or not url or "esempio.com" in url:
+        return None
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            pdf_bytes = response.read()
+
+        file_obj = client.files.upload(
+            file=pdf_bytes,
+            mime_type="application/pdf",
+            config={"display_name": "Listino_Ufficiale.pdf"}
+        )
+        return file_obj
+    except Exception as e:
+        st.sidebar.error(f"Impossibile caricare il listino PDF online: {e}")
+        return None
 
 # --- FUNZIONE DI FALLBACK TRA MODELLI ---
 def genera_contenuto_con_fallback(contents, json_mode=False):
@@ -112,12 +140,11 @@ if col_desc_trovata:
 elenco_ragioni_sociali = json.dumps(lista_opzioni_clienti, ensure_ascii=False)
 elenco_codici_articoli = json.dumps(lista_opzioni_articoli, ensure_ascii=False)
 
-# --- ALGORITMO DI RICERCA FLESSIBILE SENZA SOVRACCARICO ---
+# --- ALGORITMO DI RICERCA FLESSIBILE ---
 def cerca_articoli_simili(query, max_risultati=10):
     if df_articoli.empty or not col_desc_trovata or not col_art_trovata:
         return []
     
-    # Pulisce le parole della ricerca tenendo anche abbreviazioni di 2+ caratteri
     parole = [p.lower() for p in re.findall(r'\w+', query) if len(p) >= 2]
     if not parole:
         return []
@@ -131,7 +158,6 @@ def cerca_articoli_simili(query, max_risultati=10):
         
         punteggio = 0
         for p in parole:
-            # Punti se la parola o l'abbreviazione è contenuta nella descrizione o codice
             if p in desc_lower or p in cod_lower:
                 punteggio += 2
             elif len(p) >= 3 and any(token.startswith(p[:3]) for token in re.findall(r'\w+', desc_lower)):
@@ -192,7 +218,7 @@ with col_chat:
                     st.markdown(prompt)
 
                 with st.chat_message("assistant"):
-                    with st.spinner("Victoria sta cercando..."):
+                    with st.spinner("Victoria sta consultando il listino..."):
                         articoli_trovati = cerca_articoli_simili(prompt)
                         
                         if articoli_trovati:
@@ -202,32 +228,32 @@ with col_chat:
                         else:
                             info_catalogo = "\n\nNessun articolo direttamente corrispondente trovato nell'anagrafica Excel."
 
-                        history = [
-                            {
-                                "role": "model" if m["role"] == "assistant" else "user",
-                                "parts": [{"text": m["content"]}]
-                            } 
-                            for m in st.session_state.messages[:-1]
-                        ]
-
                         system_instruction = (
                             "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
+                            "Hai accesso al listino prezzi e alla documentazione in allegato PDF. "
                             "Rispondi in modo professionale, chiaro e sintetico, senza ripetere presentazioni ad ogni messaggio. "
                             "Se ti chiedono chi ti ha creata o sviluppata, rispondi che sei stata creata da Andrea Uzzardi. "
                             "Non menzionare mai Google, Gemini o di essere un'IA generica.\n"
-                            "Quando l'utente ti chiede modelli, prodotti o codici simili, utilizza le informazioni tratte dall'anagrafica Excel "
-                            "che ti vengono fornite nel contesto per elencare i codici articolo (Codart) e le descrizioni pertinenti."
+                            "Utilizza sia la documentazione allegata sia le informazioni tratte dall'anagrafica Excel "
+                            "per fornire all'utente i prezzi, le descrizioni e i codici articolo corretto."
                         )
 
-                        prompt_con_contesto = f"{prompt}\n{info_catalogo}"
+                        # Carica il PDF del listino online se configurato
+                        pdf_listino_file = carica_pdf_listino_online(URL_LISTINO_PDF)
+
+                        # Prepariamo la lista dei contenuti per la richiesta
+                        contenuto_messaggio = []
+                        if pdf_listino_file:
+                            contenuto_messaggio.append(pdf_listino_file)
+                        
+                        contenuto_messaggio.append(f"{prompt}\n{info_catalogo}")
 
                         try:
                             chat = client.chats.create(
                                 model="gemini-3.5-flash",
-                                config={"system_instruction": system_instruction},
-                                history=history
+                                config={"system_instruction": system_instruction}
                             )
-                            response = chat.send_message(prompt_con_contesto)
+                            response = chat.send_message(contenuto_messaggio)
                             risposta = response.text
                         except Exception as e:
                             err_str = str(e)
@@ -235,10 +261,9 @@ with col_chat:
                                 try:
                                     chat_fallback = client.chats.create(
                                         model="gemini-3.5-flash-lite",
-                                        config={"system_instruction": system_instruction},
-                                        history=history
+                                        config={"system_instruction": system_instruction}
                                     )
-                                    response = chat_fallback.send_message(prompt_con_contesto)
+                                    response = chat_fallback.send_message(contenuto_messaggio)
                                     risposta = response.text
                                 except Exception as err_fallback:
                                     risposta = f"Servizio temporaneamente occupato. Riprova tra poco. ({err_fallback})"
