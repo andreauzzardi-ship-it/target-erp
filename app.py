@@ -99,7 +99,6 @@ with col_chat:
 def carica_clienti():
     try:
         df = pd.read_excel("clienti.xlsx")
-        # Pulizia nomi colonne (rimuove spazi vuoti accidentali)
         df.columns = df.columns.str.strip()
         return df
     except Exception:
@@ -107,15 +106,16 @@ def carica_clienti():
 
 df_clienti = carica_clienti()
 
-# Prepariamo la struttura dati da passare all'IA
-clienti_dict = []
+# Stringa ultra-compatta per risparmiare token
+clienti_str = ""
 if not df_clienti.empty:
+    elenco = []
     for _, row in df_clienti.iterrows():
-        # Cerca colonne flessibili per evitare errori di battitura nei titoli dell'Excel
         cod = str(row.get("COD_CLIENTE", row.get("Codice", "N/D")))
         rag = str(row.get("RAGIONE_SOCIALE", row.get("Cliente", row.get("Ragione Sociale", "N/D"))))
         if rag != "N/D":
-            clienti_dict.append({"COD_CLIENTE": cod, "RAGIONE_SOCIALE": rag})
+            elenco.append(f"{cod}:{rag}")
+    clienti_str = ", ".join(elenco)
 
 # --- SEZIONE SELEZIONE TIPO DOCUMENTO ---
 st.write("Seleziona il tipo di documento:")
@@ -142,15 +142,15 @@ with tab_upload:
                 file_bytes = uploaded_file.read()
                 mime_type = uploaded_file.type
                 
-                # Definizione del prompt per l'estrazione
+                # Prompt alleggerito per il file
                 prompt_estrazione = f"""
                 Estragga le righe dell'ordine/offerta dal documento allegato per un documento di tipo: {doc_type}.
                 
-                ELENCO CLIENTI ANAGRAFICA REALE:
-                {json.dumps(clienti_dict, ensure_ascii=False)}
+                ELENCO CLIENTI (CODICE:RAGIONE_SOCIALE):
+                {clienti_str}
 
                 REGOLE ESSENZIALI CLIENTI:
-                1. Confronta il nome del cliente trovato nel file con l'ELENCO CLIENTI ANAGRAFICA REALE.
+                1. Confronta il nome del cliente trovato nel file con l'ELENCO CLIENTI qui sopra.
                 2. Imposta il "RAGIONE_SOCIALE" e "COD_CLIENTE" esatti dall'anagrafica se trovi una corrispondenza.
                 
                 Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con esattamente queste chiavi:
@@ -159,7 +159,6 @@ with tab_upload:
                 La QUANTITA deve essere un numero intero.
                 """
 
-                # Chiamata a Gemini inviando sia il file che il prompt
                 from google.genai import types
                 
                 res = client.models.generate_content(
@@ -189,14 +188,15 @@ with tab_text:
         if email_text.strip():
             with st.spinner("Estrazione dati dall'email in corso..."):
                 try:
+                    # Prompt alleggerito per l'email
                     prompt_estrazione = f"""
                     Estragga le righe dell'ordine/offerta per un documento di tipo: {doc_type}.
                     
-                    ELENCO CLIENTI ANAGRAFICA REALE:
-                    {json.dumps(clienti_dict, ensure_ascii=False)}
+                    ELENCO CLIENTI (CODICE:RAGIONE_SOCIALE):
+                    {clienti_str}
 
                     REGOLE ESSENZIALI CLIENTI:
-                    1. Confronta il nome del cliente trovato nel testo con l'ELENCO CLIENTI ANAGRAFICA REALE.
+                    1. Confronta il nome del cliente trovato nel testo con l'ELENCO CLIENTI qui sopra.
                     2. Imposta il "RAGIONE_SOCIALE" e "COD_CLIENTE" esatti dall'anagrafica se trovi una corrispondenza.
 
                     Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con esattamente queste chiavi:
