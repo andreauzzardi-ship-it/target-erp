@@ -240,11 +240,18 @@ if "dati" not in st.session_state:
         }
     ]
 
-# Estraiamo la lista delle Ragioni Sociali convertendole tutte in stringa per evitare valori nulli o float
+# Estrazione sicura delle Ragioni Sociali dal file Excel
 lista_opzioni_clienti = []
 if not df_clienti.empty:
-    col_rag = "RAGIONE_SOCIALE" if "RAGIONE_SOCIALE" in df_clienti.columns else df_clienti.columns[0]
-    lista_opzioni_clienti = [str(x) for x in df_clienti[col_rag].dropna().unique().tolist() if str(x).strip()]
+    # Cerca la colonna corretta ignorando differenze tra maiuscole e minuscole
+    col_trovata = None
+    for col in df_clienti.columns:
+        if col.upper().strip() in ["RAGIONE_SOCIALE", "RAGIONE SOCIALE", "CLIENTE", "NOME"]:
+            col_trovata = col
+            break
+    
+    if col_trovata:
+        lista_opzioni_clienti = [str(x).strip() for x in df_clienti[col_trovata].dropna().unique() if str(x).strip()]
 
 df = pd.DataFrame(st.session_state.dati)
 
@@ -253,10 +260,12 @@ column_config = {}
 if lista_opzioni_clienti:
     column_config["RAGIONE_SOCIALE"] = st.column_config.SelectboxColumn(
         "RAGIONE_SOCIALE",
-        help="Cerca e seleziona il cliente corretto dall'anagrafica Excel",
+        help="Fai doppio clic per cercare e selezionare il cliente",
         options=lista_opzioni_clienti,
-        required=False
+        required=True
     )
+else:
+    st.warning("⚠️ Nessun cliente caricato da 'clienti.xlsx'. Verificare il nome delle colonne nel file Excel.")
 
 edited_df = st.data_editor(
     df, 
@@ -265,18 +274,18 @@ edited_df = st.data_editor(
     num_rows="dynamic"
 )
 
-# Aggiornamento automatico del COD_CLIENTE in base alla RAGIONE_SOCIALE selezionata
-if not df_clienti.empty:
-    col_cod = "COD_CLIENTE" if "COD_CLIENTE" in df_clienti.columns else None
-    col_rag = "RAGIONE_SOCIALE" if "RAGIONE_SOCIALE" in df_clienti.columns else None
+# Aggiornamento automatico del COD_CLIENTE in base alla RAGIONE_SOCIALE scelta
+if not df_clienti.empty and lista_opzioni_clienti:
+    col_cod = next((c for c in df_clienti.columns if c.upper().strip() in ["COD_CLIENTE", "CODICE", "CODICE CLIENTE"]), None)
+    col_rag = col_trovata
+    
     if col_cod and col_rag:
-        # Convertiamo i campi in stringa per garantire il mapping
-        df_clienti_copy = df_clienti.copy()
-        df_clienti_copy[col_rag] = df_clienti_copy[col_rag].astype(str)
-        df_clienti_copy[col_cod] = df_clienti_copy[col_cod].astype(str)
+        df_copy = df_clienti.copy()
+        df_copy[col_rag] = df_copy[col_rag].astype(str).str.strip()
+        df_copy[col_cod] = df_copy[col_cod].astype(str).str.strip()
         
-        mappa_clienti = dict(zip(df_clienti_copy[col_rag], df_clienti_copy[col_cod]))
-        edited_df["COD_CLIENTE"] = edited_df["RAGIONE_SOCIALE"].astype(str).map(mappa_clienti).fillna(edited_df["COD_CLIENTE"])
+        mappa_clienti = dict(zip(df_copy[col_rag], df_copy[col_cod]))
+        edited_df["COD_CLIENTE"] = edited_df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_clienti).fillna(edited_df["COD_CLIENTE"])
 
 # Pulsante di esportazione CSV
 csv_data = edited_df.to_csv(index=False).encode('utf-8')
