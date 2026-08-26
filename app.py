@@ -107,10 +107,49 @@ doc_type = st.radio(
 tab_upload, tab_text = st.tabs(["📄 Carica PDF / Immagine", "✉️ Incolla Testo Email"])
 
 with tab_upload:
-    uploaded_file = st.file_uploader("Trascina file", type=["pdf", "jpg", "png", "jpeg"], label_visibility="collapsed")
-    if uploaded_file and st.button("⚡ Analizza File", type="primary"):
-        with st.spinner("Elaborazione file in corso..."):
-            st.info("Funzionalità di lettura file (PDF/Immagini) pronta per l'integrazione.")
+    uploaded_file = st.file_uploader(
+        "Trascina file (PDF o Immagine)", 
+        type=["pdf", "jpg", "png", "jpeg"], 
+        label_visibility="collapsed"
+    )
+    if uploaded_file and st.button("⚡ Analizza File ed Inserisci in Tabella", type="primary"):
+        with st.spinner("Lettura ed estrazione dati dal file in corso..."):
+            try:
+                # Lettura dei byte del file caricato
+                file_bytes = uploaded_file.read()
+                mime_type = uploaded_file.type
+                
+                # Definizione del prompt per l'estrazione
+                prompt_estrazione = f"""
+                Estragga le righe dell'ordine/offerta dal documento allegato per un documento di tipo: {doc_type}.
+                Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con esattamente queste chiavi:
+                "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
+                Se qualche dato non è presente nel testo, inserisci "N/D".
+                La QUANTITA deve essere un numero intero.
+                """
+
+                # Chiamata a Gemini inviando sia il file che il prompt
+                from google.genai import types
+                
+                res = client.models.generate_content(
+                    model="gemini-3.5-flash",
+                    contents=[
+                        types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+                        prompt_estrazione
+                    ],
+                    config={"response_mime_type": "application/json"}
+                )
+
+                nuovi_dati = json.loads(res.text)
+
+                if "dati" not in st.session_state:
+                    st.session_state.dati = []
+
+                st.session_state.dati.extend(nuovi_dati)
+                st.success("Dati estratti dal file e aggiunti alla tabella!")
+
+            except Exception as e:
+                st.error(f"Errore durante l'analisi del file: {e}")
 
 with tab_text:
     email_text = st.text_area("Incolla qui il testo dell'email o del documento...", height=130)
