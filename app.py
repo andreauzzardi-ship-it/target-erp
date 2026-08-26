@@ -33,68 +33,6 @@ iframe[title="streamlitApp"] + div {
 # Recupero della chiave API dai secrets di Streamlit
 client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# --- INTESTAZIONE + CHAT VICTORIA ---
-col_titolo, col_chat = st.columns([3, 1])
-
-with col_titolo:
-    st.title("📦 Target ERP — Smart Order & Quote Hub")
-
-with col_chat:
-    with st.popover("💬 Chat con Victoria", use_container_width=True):
-        st.subheader("🤖 Victoria — Target ERP")
-        st.caption("Chiedi supporto o informazioni sui prodotti.")
-        
-        chat_container = st.container(height=300)
-        
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        with chat_container:
-            for msg in st.session_state.messages:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
-
-        if prompt := st.chat_input("Chiedi info a Victoria..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            
-            with chat_container:
-                with st.chat_message("user"):
-                    st.markdown(prompt)
-
-                with st.chat_message("assistant"):
-                    with st.spinner("Victoria sta rispondendo..."):
-                        try:
-                            history = [
-                                {
-                                    "role": "model" if m["role"] == "assistant" else "user",
-                                    "parts": [{"text": m["content"]}]
-                                } 
-                                for m in st.session_state.messages[:-1]
-                            ]
-
-                            system_instruction = (
-                                "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
-                                "Rispondi in modo professionale e sintetico, senza ripetere le presentazioni ad ogni messaggio. "
-                                "Se ti chiedono chi ti ha creata o sviluppata, rispondi che sei stata creata da Andrea Uzzardi. "
-                                "Non menzionare mai Google, Gemini o di essere un'IA generica."
-                            )
-
-                            chat = client.chats.create(
-                                model="gemini-3.5-flash",
-                                config={"system_instruction": system_instruction},
-                                history=history
-                            )
-                            
-                            response = chat.send_message(prompt)
-                            risposta = response.text
-
-                        except Exception as e:
-                            risposta = f"Errore nella generazione: {e}"
-
-                        st.markdown(risposta)
-            
-            st.session_state.messages.append({"role": "assistant", "content": risposta})
-
 # --- CARICAMENTO ANAGRAFICHE EXCEL ---
 @st.cache_data
 def carica_anagrafica(nome_file):
@@ -124,7 +62,7 @@ if not df_clienti.empty:
     if col_rag_trovata:
         lista_opzioni_clienti = [str(x).strip() for x in df_clienti[col_rag_trovata].dropna().unique() if str(x).strip()]
 
-# Identificazione colonne per ARTICOLI (Fornitore, Codart, Descrizione articolo, Codfor)
+# Identificazione colonne per ARTICOLI (Codart, Descrizione articolo)
 col_art_trovata = "Codart" if "Codart" in df_articoli.columns else None
 col_desc_trovata = "Descrizione articolo" if "Descrizione articolo" in df_articoli.columns else None
 
@@ -152,6 +90,35 @@ if col_desc_trovata:
 elenco_ragioni_sociali = json.dumps(lista_opzioni_clienti, ensure_ascii=False)
 elenco_codici_articoli = json.dumps(lista_opzioni_articoli, ensure_ascii=False)
 
+# Funzione per cercare articoli simili nell'Excel per Victoria
+def cerca_articoli_simili(query, max_risultati=10):
+    if df_articoli.empty or not col_desc_trovata or not col_art_trovata:
+        return []
+    
+    parole = [p.lower() for p in re.findall(r'\w+', query) if len(p) > 1]
+    if not parole:
+        return []
+
+    risultati = []
+    for _, row in df_articoli.iterrows():
+        desc = str(row[col_desc_trovata])
+        cod = str(row[col_art_trovata])
+        desc_lower = desc.lower()
+        
+        # Punteggio basato su quante parole della ricerca appaiono nella descrizione o codice
+        punteggio = sum(1 for p in parole if p in desc_lower or p in cod.lower())
+        
+        if punteggio > 0:
+            risultati.append({
+                "codice": cod,
+                "descrizione": desc,
+                "punteggio": punteggio
+            })
+            
+    # Ordina per rilevanza (punteggio maggiore)
+    risultati.sort(key=lambda x: x["punteggio"], reverse=True)
+    return risultati[:max_risultati]
+
 # Funzione per trovare la migliore corrispondenza della ragione sociale
 def trova_ragione_sociale_valida(testo_estratto):
     if not testo_estratto or testo_estratto in ["N/D", ""]:
@@ -168,6 +135,83 @@ def trova_ragione_sociale_valida(testo_estratto):
         if testo_clean and (testo_clean in opt_clean or opt_clean in testo_clean):
             return opt
     return ""
+
+# --- INTESTAZIONE + CHAT VICTORIA ---
+col_titolo, col_chat = st.columns([3, 1])
+
+with col_titolo:
+    st.title("📦 Target ERP — Smart Order & Quote Hub")
+
+with col_chat:
+    with st.popover("💬 Chat con Victoria", use_container_width=True):
+        st.subheader("🤖 Victoria — Target ERP")
+        st.caption("Chiedi supporto o informazioni sui prodotti.")
+        
+        chat_container = st.container(height=300)
+        
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+        with chat_container:
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+        if prompt := st.chat_input("Chiedi info a Victoria..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            
+            with chat_container:
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Victoria sta cercando..."):
+                        try:
+                            # Cerca prodotti correlati nel file Excel
+                            articoli_trovati = cerca_articoli_simili(prompt)
+                            
+                            info_catalogo = ""
+                            if articoli_trovati:
+                                info_catalogo = "\n\nARTICOLI RILEVATI DALL'ANAGRAFICA PRODOTTI (Excel):\n" + "\n".join(
+                                    [f"- Codice: {a['codice']} | Descrizione: {a['descrizione']}" for a in articoli_trovati]
+                                )
+                            else:
+                                info_catalogo = "\n\nNessun articolo direttamente corrispondente trovato nell'anagrafica Excel."
+
+                            history = [
+                                {
+                                    "role": "model" if m["role"] == "assistant" else "user",
+                                    "parts": [{"text": m["content"]}]
+                                } 
+                                for m in st.session_state.messages[:-1]
+                            ]
+
+                            system_instruction = (
+                                "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
+                                "Rispondi in modo professionale, chiaro e sintetico, senza ripetere presentazioni ad ogni messaggio. "
+                                "Se ti chiedono chi ti ha creata o sviluppata, rispondi che sei stata creata da Andrea Uzzardi. "
+                                "Non menzionare mai Google, Gemini o di essere un'IA generica.\n"
+                                "Quando l'utente ti chiede modelli, prodotti o codici simili, utilizza le informazioni tratte dall'anagrafica Excel "
+                                "che ti vengono fornite nel contesto per elencare i codici articolo (Codart) e le descrizioni pertinenti."
+                            )
+
+                            prompt_con_contesto = f"{prompt}\n{info_catalogo}"
+
+                            chat = client.chats.create(
+                                model="gemini-3.5-flash",
+                                config={"system_instruction": system_instruction},
+                                history=history
+                            )
+                            
+                            response = chat.send_message(prompt_con_contesto)
+                            risposta = response.text
+
+                        except Exception as e:
+                            risposta = f"Errore nella generazione: {e}"
+
+                        st.markdown(risposta)
+            
+            st.session_state.messages.append({"role": "assistant", "content": risposta})
 
 # --- SEZIONE SELEZIONE TIPO DOCUMENTO ---
 st.write("Seleziona il tipo di documento:")
