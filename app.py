@@ -2,7 +2,7 @@ import json
 import re
 import pandas as pd
 import streamlit as st
-from google.genai import Client
+from google.genai import Client, types
 
 # Configurazione pagina
 st.set_page_config(page_title="Target ERP - Smart Order & Quote Hub", layout="wide")
@@ -32,6 +32,28 @@ iframe[title="streamlitApp"] + div {
 
 # Recupero della chiave API dai secrets di Streamlit
 client = Client(api_key=st.secrets["GOOGLE_API_KEY"])
+
+# --- FUNZIONE HELPER PER FALLBACK AUTOMATICO TRA MODELLI ---
+def genera_contenuto_con_fallback(contents, json_mode=False):
+    config = {"response_mime_type": "application/json"} if json_mode else {}
+    try:
+        # Primo tentativo con Gemini 3.5 Flash
+        return client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=contents,
+            config=config
+        )
+    except Exception as e:
+        err_str = str(e)
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            # Fallback automatico su Gemini 3.5 Flash Lite
+            return client.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=contents,
+                config=config
+            )
+        else:
+            raise e
 
 # --- CARICAMENTO ANAGRAFICHE EXCEL ---
 @st.cache_data
@@ -105,7 +127,6 @@ def cerca_articoli_simili(query, max_risultati=10):
         cod = str(row[col_art_trovata])
         desc_lower = desc.lower()
         
-        # Punteggio basato su quante parole della ricerca appaiono nella descrizione o codice
         punteggio = sum(1 for p in parole if p in desc_lower or p in cod.lower())
         
         if punteggio > 0:
@@ -115,7 +136,6 @@ def cerca_articoli_simili(query, max_risultati=10):
                 "punteggio": punteggio
             })
             
-    # Ordina per rilevanza (punteggio maggiore)
     risultati.sort(key=lambda x: x["punteggio"], reverse=True)
     return risultati[:max_risultati]
 
@@ -166,48 +186,59 @@ with col_chat:
 
                 with st.chat_message("assistant"):
                     with st.spinner("Victoria sta cercando..."):
-                        try:
-                            # Cerca prodotti correlati nel file Excel
-                            articoli_trovati = cerca_articoli_simili(prompt)
-                            
-                            info_catalogo = ""
-                            if articoli_trovati:
-                                info_catalogo = "\n\nARTICOLI RILEVATI DALL'ANAGRAFICA PRODOTTI (Excel):\n" + "\n".join(
-                                    [f"- Codice: {a['codice']} | Descrizione: {a['descrizione']}" for a in articoli_trovati]
-                                )
-                            else:
-                                info_catalogo = "\n\nNessun articolo direttamente corrispondente trovato nell'anagrafica Excel."
-
-                            history = [
-                                {
-                                    "role": "model" if m["role"] == "assistant" else "user",
-                                    "parts": [{"text": m["content"]}]
-                                } 
-                                for m in st.session_state.messages[:-1]
-                            ]
-
-                            system_instruction = (
-                                "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
-                                "Rispondi in modo professionale, chiaro e sintetico, senza ripetere presentazioni ad ogni messaggio. "
-                                "Se ti chiedono chi ti ha creata o sviluppata, rispondi che sei stata creata da Andrea Uzzardi. "
-                                "Non menzionare mai Google, Gemini o di essere un'IA generica.\n"
-                                "Quando l'utente ti chiede modelli, prodotti o codici simili, utilizza le informazioni tratte dall'anagrafica Excel "
-                                "che ti vengono fornite nel contesto per elencare i codici articolo (Codart) e le descrizioni pertinenti."
+                        # Cerca prodotti correlati nel file Excel
+                        articoli_trovati = cerca_articoli_simili(prompt)
+                        
+                        if articoli_trovati:
+                            info_catalogo = "\n\nARTICOLI RILEVATI DALL'ANAGRAFICA PRODOTTI (Excel):\n" + "\n".join(
+                                [f"- Codice: {a['codice']} | Descrizione: {a['descrizione']}" for a in articoli_trovati]
                             )
+                        else:
+                            info_catalogo = "\n\nNessun articolo direttamente corrispondente trovato nell'anagrafica Excel."
 
-                            prompt_con_contesto = f"{prompt}\n{info_catalogo}"
+                        history = [
+                            {
+                                "role": "model" if m["role"] == "assistant" else "user",
+                                "parts": [{"text": m["content"]}]
+                            } 
+                            for m in st.session_state.messages[:-1]
+                        ]
 
+                        system_instruction = (
+                            "Sei Victoria, l'assistente virtuale ufficiale del software Target ERP. "
+                            "Rispondi in modo professionale, chiaro e sintetico, senza ripetere presentazioni ad ogni messaggio. "
+                            "Se ti chiedono chi ti ha creata o sviluppata, rispondi che sei stata creata da Andrea Uzzardi. "
+                            "Non menzionare mai Google, Gemini o di essere un'IA generica.\n"
+                            "Quando l'utente ti chiede modelli, prodotti o codici simili, utilizza le informazioni tratte dall'anagrafica Excel "
+                            "che ti vengono fornite nel contesto per elencare i codici articolo (Codart) e le descrizioni pertinenti."
+                        )
+
+                        prompt_con_contesto = f"{prompt}\n{info_catalogo}"
+
+                        # Gestione chat con fallback automatico su gemini-3.5-flash-lite
+                        try:
                             chat = client.chats.create(
                                 model="gemini-3.5-flash",
                                 config={"system_instruction": system_instruction},
                                 history=history
                             )
-                            
                             response = chat.send_message(prompt_con_contesto)
                             risposta = response.text
-
                         except Exception as e:
-                            risposta = f"Errore nella generazione: {e}"
+                            err_str = str(e)
+                            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                                try:
+                                    chat_fallback = client.chats.create(
+                                        model="gemini-3.5-flash-lite",
+                                        config={"system_instruction": system_instruction},
+                                        history=history
+                                    )
+                                    response = chat_fallback.send_message(prompt_con_contesto)
+                                    risposta = response.text
+                                except Exception as err_fallback:
+                                    risposta = f"Errore anche sul modello di riserva (Lite): {err_fallback}"
+                            else:
+                                risposta = f"Errore durante la generazione: {e}"
 
                         st.markdown(risposta)
             
@@ -257,15 +288,9 @@ with tab_upload:
                 file_bytes = uploaded_file.read()
                 mime_type = uploaded_file.type
                 
-                from google.genai import types
-                
-                res = client.models.generate_content(
-                    model="gemini-3.5-flash",
-                    contents=[
-                        types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-                        prompt_base_estrazione
-                    ],
-                    config={"response_mime_type": "application/json"}
+                res = genera_contenuto_con_fallback(
+                    [types.Part.from_bytes(data=file_bytes, mime_type=mime_type), prompt_base_estrazione],
+                    json_mode=True
                 )
 
                 nuovi_dati = json.loads(res.text)
@@ -290,12 +315,9 @@ with tab_text:
         if email_text.strip():
             with st.spinner("Estrazione dati dall'email in corso..."):
                 try:
-                    full_prompt = f"{prompt_base_estrazione}\n\nTesto:\n{email_text}"
-                    
-                    res = client.models.generate_content(
-                        model="gemini-3.5-flash",
-                        contents=full_prompt,
-                        config={"response_mime_type": "application/json"}
+                    res = genera_contenuto_con_fallback(
+                        f"{prompt_base_estrazione}\n\nTesto:\n{email_text}",
+                        json_mode=True
                     )
                     
                     nuovi_dati = json.loads(res.text)
