@@ -117,6 +117,15 @@ if not df_clienti.empty:
         if rag != "N/D":
             clienti_dict.append({"COD_CLIENTE": cod, "RAGIONE_SOCIALE": rag})
 
+# --- SEZIONE SELEZIONE TIPO DOCUMENTO ---
+st.write("Seleziona il tipo di documento:")
+doc_type = st.radio(
+    "Seleziona il tipo di documento:", 
+    ["🛒 Ordine Cliente", "📋 Offerta"], 
+    horizontal=True, 
+    label_visibility="collapsed"
+)
+
 # --- SEZIONE CARICAMENTO CON TAB (PDF / IMMAGINE E EMAIL) ---
 tab_upload, tab_text = st.tabs(["📄 Carica PDF / Immagine", "✉️ Incolla Testo Email"])
 
@@ -136,6 +145,14 @@ with tab_upload:
                 # Definizione del prompt per l'estrazione
                 prompt_estrazione = f"""
                 Estragga le righe dell'ordine/offerta dal documento allegato per un documento di tipo: {doc_type}.
+                
+                ELENCO CLIENTI ANAGRAFICA REALE:
+                {json.dumps(clienti_dict, ensure_ascii=False)}
+
+                REGOLE ESSENZIALI CLIENTI:
+                1. Confronta il nome del cliente trovato nel file con l'ELENCO CLIENTI ANAGRAFICA REALE.
+                2. Imposta il "RAGIONE_SOCIALE" e "COD_CLIENTE" esatti dall'anagrafica se trovi una corrispondenza.
+                
                 Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con esattamente queste chiavi:
                 "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
                 Se qualche dato non è presente nel testo, inserisci "N/D".
@@ -174,9 +191,18 @@ with tab_text:
                 try:
                     prompt_estrazione = f"""
                     Estragga le righe dell'ordine/offerta per un documento di tipo: {doc_type}.
-                    Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con queste tre chiavi esatte:
-                    "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA" (come numero intero).
-                    Se manca un codice, usa "N/D".
+                    
+                    ELENCO CLIENTI ANAGRAFICA REALE:
+                    {json.dumps(clienti_dict, ensure_ascii=False)}
+
+                    REGOLE ESSENZIALI CLIENTI:
+                    1. Confronta il nome del cliente trovato nel testo con l'ELENCO CLIENTI ANAGRAFICA REALE.
+                    2. Imposta il "RAGIONE_SOCIALE" e "COD_CLIENTE" esatti dall'anagrafica se trovi una corrispondenza.
+
+                    Restituisci ESCLUSIVAMENTE una lista JSON di oggetti con esattamente queste chiavi:
+                    "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
+                    Se manca un dato o codice, usa "N/D".
+                    La QUANTITA deve essere un numero intero.
 
                     Testo:
                     {email_text}
