@@ -138,11 +138,9 @@ with tab_upload:
     if uploaded_file and st.button("⚡ Analizza File ed Inserisci in Tabella", type="primary"):
         with st.spinner("Lettura ed estrazione dati dal file in corso..."):
             try:
-                # Lettura dei byte del file caricato
                 file_bytes = uploaded_file.read()
                 mime_type = uploaded_file.type
                 
-                # Prompt alleggerito per il file
                 prompt_estrazione = f"""
                 Estragga le righe dell'ordine/offerta dal documento allegato per un documento di tipo: {doc_type}.
                 
@@ -188,7 +186,6 @@ with tab_text:
         if email_text.strip():
             with st.spinner("Estrazione dati dall'email in corso..."):
                 try:
-                    # Prompt alleggerito per l'email
                     prompt_estrazione = f"""
                     Estragga le righe dell'ordine/offerta per un documento di tipo: {doc_type}.
                     
@@ -243,8 +240,38 @@ if "dati" not in st.session_state:
         }
     ]
 
+# Estraiamo la lista delle Ragioni Sociali per il menu a tendina
+lista_opzioni_clienti = []
+if not df_clienti.empty:
+    col_rag = "RAGIONE_SOCIALE" if "RAGIONE_SOCIALE" in df_clienti.columns else df_clienti.columns[0]
+    lista_opzioni_clienti = df_clienti[col_rag].dropna().unique().tolist()
+
 df = pd.DataFrame(st.session_state.dati)
-edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
+
+# Configurazione della colonna RAGIONE_SOCIALE con ricerca/menu a tendina
+column_config = {}
+if lista_opzioni_clienti:
+    column_config["RAGIONE_SOCIALE"] = st.column_config.Selectbox(
+        "RAGIONE_SOCIALE",
+        help="Cerca e seleziona il cliente corretto dall'anagrafica Excel",
+        options=lista_opzioni_clienti,
+        required=False
+    )
+
+edited_df = st.data_editor(
+    df, 
+    column_config=column_config,
+    use_container_width=True, 
+    num_rows="dynamic"
+)
+
+# Aggiornamento del COD_CLIENTE basato sulla RAGIONE_SOCIALE scelta
+if not df_clienti.empty:
+    col_cod = "COD_CLIENTE" if "COD_CLIENTE" in df_clienti.columns else None
+    col_rag = "RAGIONE_SOCIALE" if "RAGIONE_SOCIALE" in df_clienti.columns else None
+    if col_cod and col_rag:
+        mappa_clienti = dict(zip(df_clienti[col_rag], df_clienti[col_cod]))
+        edited_df["COD_CLIENTE"] = edited_df["RAGIONE_SOCIALE"].map(mappa_clienti).fillna(edited_df["COD_CLIENTE"])
 
 # Pulsante di esportazione CSV
 csv_data = edited_df.to_csv(index=False).encode('utf-8')
