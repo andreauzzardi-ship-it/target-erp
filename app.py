@@ -228,34 +228,34 @@ st.divider()
 # --- CONTENUTO PRINCIPALE: TABELLA COMPLETA ED ESPORTAZIONE ---
 st.subheader("Gestione Ordini e Articoli")
 
+# Inizializziamo la tabella vuota (senza dati di prova)
 if "dati" not in st.session_state:
-    st.session_state.dati = [
-        {
-            "COD_CLIENTE": "CLI-001",
-            "RAGIONE_SOCIALE": "Rossi S.R.L.",
-            "COD_ARTICOLO": "C-600",
-            "DESCRIZIONE": "Connettore Rapido",
-            "QUANTITA": 5,
-            "DATA_CONSEGNA": "2026-09-01"
-        }
-    ]
+    st.session_state.dati = []
 
-# Estrazione sicura delle Ragioni Sociali dal file Excel
+# Estrazione sicura delle Ragioni Sociali e mappatura dall'anagrafica Excel
 lista_opzioni_clienti = []
+col_rag_trovata = None
+col_cod_trovato = None
+
 if not df_clienti.empty:
-    # Cerca la colonna corretta ignorando differenze tra maiuscole e minuscole
-    col_trovata = None
     for col in df_clienti.columns:
-        if col.upper().strip() in ["RAGIONE_SOCIALE", "RAGIONE SOCIALE", "CLIENTE", "NOME"]:
-            col_trovata = col
-            break
-    
-    if col_trovata:
-        lista_opzioni_clienti = [str(x).strip() for x in df_clienti[col_trovata].dropna().unique() if str(x).strip()]
+        c_upper = col.upper().strip()
+        if c_upper in ["RAGIONE_SOCIALE", "RAGIONE SOCIALE", "CLIENTE", "NOME"]:
+            col_rag_trovata = col
+        elif c_upper in ["COD_CLIENTE", "CODICE", "CODICE CLIENTE"]:
+            col_cod_trovato = col
 
-df = pd.DataFrame(st.session_state.dati)
+    if col_rag_trovata:
+        lista_opzioni_clienti = [str(x).strip() for x in df_clienti[col_rag_trovata].dropna().unique() if str(x).strip()]
 
-# Configurazione della colonna RAGIONE_SOCIALE con SelectboxColumn
+# Creazione DataFrame con colonne predefinite se lo stato è vuoto
+colonne_tabella = ["COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA"]
+if st.session_state.dati:
+    df = pd.DataFrame(st.session_state.dati)
+else:
+    df = pd.DataFrame(columns=colonne_tabella)
+
+# Configurazione colonna RAGIONE_SOCIALE con SelectboxColumn
 column_config = {}
 if lista_opzioni_clienti:
     column_config["RAGIONE_SOCIALE"] = st.column_config.SelectboxColumn(
@@ -264,28 +264,32 @@ if lista_opzioni_clienti:
         options=lista_opzioni_clienti,
         required=True
     )
-else:
-    st.warning("⚠️ Nessun cliente caricato da 'clienti.xlsx'. Verificare il nome delle colonne nel file Excel.")
 
 edited_df = st.data_editor(
     df, 
     column_config=column_config,
     use_container_width=True, 
-    num_rows="dynamic"
+    num_rows="dynamic",
+    key="editor_tabella"
 )
 
-# Aggiornamento automatico del COD_CLIENTE in base alla RAGIONE_SOCIALE scelta
-if not df_clienti.empty and lista_opzioni_clienti:
-    col_cod = next((c for c in df_clienti.columns if c.upper().strip() in ["COD_CLIENTE", "CODICE", "CODICE CLIENTE"]), None)
-    col_rag = col_trovata
+# Aggiornamento automatico del COD_CLIENTE quando viene scelta la RAGIONE_SOCIALE
+if not edited_df.empty and not df_clienti.empty and col_rag_trovata and col_cod_trovato:
+    df_copy = df_clienti.copy()
+    df_copy[col_rag_trovata] = df_copy[col_rag_trovata].astype(str).str.strip()
+    df_copy[col_cod_trovato] = df_copy[col_cod_trovato].astype(str).str.strip()
     
-    if col_cod and col_rag:
-        df_copy = df_clienti.copy()
-        df_copy[col_rag] = df_copy[col_rag].astype(str).str.strip()
-        df_copy[col_cod] = df_copy[col_cod].astype(str).str.strip()
-        
-        mappa_clienti = dict(zip(df_copy[col_rag], df_copy[col_cod]))
-        edited_df["COD_CLIENTE"] = edited_df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_clienti).fillna(edited_df["COD_CLIENTE"])
+    mappa_clienti = dict(zip(df_copy[col_rag_trovata], df_copy[col_cod_trovato]))
+    
+    nuovi_codici = edited_df["RAGIONE_SOCIALE"].astype(str).str.strip().map(mappa_clienti)
+    
+    # Se il codice cliente non corrisponde alla ragione sociale selezionata, aggiorna e ricarica
+    if "COD_CLIENTE" in edited_df.columns and not edited_df["COD_CLIENTE"].equals(nuovi_codici.fillna(edited_df["COD_CLIENTE"])):
+        edited_df["COD_CLIENTE"] = nuovi_codici.fillna(edited_df["COD_CLIENTE"])
+        st.session_state.dati = edited_df.to_dict(orient="records")
+        st.rerun()
+else:
+    st.session_state.dati = edited_df.to_dict(orient="records")
 
 # Pulsante di esportazione CSV
 csv_data = edited_df.to_csv(index=False).encode('utf-8')
