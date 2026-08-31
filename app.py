@@ -1,4 +1,3 @@
-````python
 import io
 import json
 import re
@@ -2152,4 +2151,3 @@ with st.expander(
         st.caption(
             "✗ Cartella listini non trovata"
         )
-````
