@@ -73,16 +73,30 @@ MODELLO_OPENAI = "gpt-4.1"
 @st.cache_resource
 def get_client():
     try:
-        api_key = st.secrets.get("OPENAI_API_KEY")
-
-        if not api_key:
+        if "OPENAI_API_KEY" not in st.secrets:
+            st.error("❌ Secret OPENAI_API_KEY non trovato nei Secrets di Streamlit.")
             return None
+
+        api_key = st.secrets["OPENAI_API_KEY"]
+
+        if not api_key or not str(api_key).strip():
+            st.error("❌ OPENAI_API_KEY presente ma vuota.")
+            return None
+
+        api_key = str(api_key).strip()
+
+        # NON mostrare mai la chiave completa
+        st.sidebar.success(
+            f"🔑 API Key rilevata ({len(api_key)} caratteri)"
+        )
 
         return OpenAI(api_key=api_key)
 
-    except Exception:
+    except Exception as e:
+        st.error(
+            f"❌ Errore durante la configurazione OpenAI: {type(e).__name__}: {e}"
+        )
         return None
-
 
 client = get_client()
 
