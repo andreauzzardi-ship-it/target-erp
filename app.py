@@ -329,6 +329,8 @@ Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con le chiavi:
 Per RAGIONE_SOCIALE se non la trovi usa "". Per gli altri campi non trovati usa "N/D".
 """
 
+import difflib  # Assicurati che sia importato in cima al file, altrimenti aggiungilo lì
+
 with tab_upload:
   uploaded_files = st.file_uploader(
       "Trascina file (PDF o Immagine)",
@@ -340,7 +342,7 @@ with tab_upload:
       "⚡ Analizza File ed Inserisci in Tabella", type="primary"
   ):
     with st.spinner(
-        "Analisi documenti e abbinamento intelligente in corso..."
+        "Analisi documenti e abbinamento anagrafiche in corso..."
     ):
       try:
         if "dati" not in st.session_state:
@@ -348,33 +350,34 @@ with tab_upload:
 
         totale_aggiunti = 0
 
-        catalogo_rigido = ""
-        if not df_articoli.empty and col_art_trovata and col_desc_trovata:
-          df_catalogo_clean = df_articoli[
-              [col_art_trovata, col_desc_trovata]
-          ].dropna()
-          catalogo_rigido = (
-              "\nLISTINO UFFICIALE DI RIFERIMENTO (Cerca per corrispondenza"
-              " anche parziale o semantica della descrizione):\n"
-              + df_catalogo_clean.to_string(index=False)
-          )
-
-        prompt_estrazione_intelligente = f"""
+        # Prompt pulito: l'IA deve solo estrarre i dati grezzi senza stressarsi troppo sui codici
+        prompt_estrazione_pura = f"""
 Analizza la richiesta per un documento di tipo: {doc_type}.
 
 ELENCO RAGIONI SOCIALI CLIENTE VALIDE:
 {elenco_ragioni_sociali}
 
-{catalogo_rigido}
-
-REGOLE TASSATIVE PER L'ESTRAZIONE:
+REGOLE DI ESTRAZIONE:
 1. Trova l'intestazione o il cliente nel documento e abbinalo all'ELENCO RAGIONI SOCIALI CLIENTE VALIDE (se non lo trovi usa "").
-2. Per ogni riga articolo trovata nel documento:
-   - Estrai la DESCRIZIONE così come appare, la QUANTITA (numero intero) e la DATA_CONSEGNA.
-   - **ABBINAMENTO CODICE**: Guarda il LISTINO UFFICIALE. Trova l'articolo che corrisponde (anche se la descrizione nel PDF è leggermente abbreviata o diversa) e **copia l'esatto CODICE ARTICOLO (Codart)**. Se hai dubbi ma riconosci il prodotto, metti il codice più probabile dal listino anziché lasciarlo vuoto o "N/D".
+2. Per ogni riga articolo trovata nel documento, estrai:
+   - "DESCRIZIONE": la descrizione così come appare nel documento.
+   - "QUANTITA": numero intero.
+   - "DATA_CONSEGNA": la data se presente, altrimenti "N/D".
 3. Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con le chiavi esatte:
    "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
+   (Per COD_ARTICOLO puoi lasciare stringa vuota o "N/D", penserà il sistema a mapparlo).
 """
+
+        # Prepariamo le liste di supporto per il match esatto o fuzzy in Python
+        lista_desc_ufficiali = []
+        mappa_desc_to_cod = {}
+        if not df_articoli.empty and col_art_trovata and col_desc_trovata:
+          for _, r in df_articoli.iterrows():
+            d_uff = str(r[col_desc_trovata]).strip()
+            c_uff = str(r[col_art_trovata]).strip()
+            if d_uff and d_uff != "nan":
+              lista_desc_ufficiali.append(d_uff)
+              mappa_desc_to_cod[d_uff.upper()] = c_uff
 
         for uploaded_file in uploaded_files:
           file_bytes = uploaded_file.read()
@@ -385,55 +388,46 @@ REGOLE TASSATIVE PER L'ESTRAZIONE:
           )
 
           res = genera_contenuto_con_fallback(
-              [risorsa_pdf, prompt_estrazione_intelligente], json_mode=True
+              [risorsa_pdf, prompt_estrazione_pura], json_mode=True
           )
 
           nuovi_dati = json.loads(res.text)
 
-          # Post-processing di sicurezza in Python per correggere i codici mancanti o disallineati
-          if not df_articoli.empty and col_art_trovata and col_desc_trovata:
-            mappa_disc_to_cod = dict(
-                zip(
-                    df_articoli[col_desc_trovata].astype(str).str.strip().str.upper(),
-                    df_articoli[col_art_trovata].astype(str).str.strip(),
-                )
+          # Algoritmo di matching intelligente in Python (Fuzzy Matching)
+          for riga in nuovi_dati:
+            riga["RAGIONE_SOCIALE"] = trova_ragione_sociale_valida(
+                riga.get("RAGIONE_SOCIALE", "")
             )
-            for riga in nuovi_dati:
-              riga["RAGIONE_SOCIALE"] = trova_ragione_sociale_valida(
-                  riga.get("RAGIONE_SOCIALE", "")
+
+            desc_estratta = str(riga.get("DESCRIZIONE", "")).strip()
+            desc_upper = desc_estratta.upper()
+
+            codice_trovato = "N/D"
+
+            if desc_upper in mappa_desc_to_cod:
+              # 1. Match perfetto
+              codice_trovato = mappa_desc_to_cod[desc_upper]
+            elif lista_desc_ufficiali:
+              # 2. Matchfuzzy (trova la descrizione ufficiale più simile nel listino)
+              match_trovati = difflib.get_close_matches(
+                  desc_estratta, lista_desc_ufficiali, n=1, cutoff=0.4
               )
+              if match_trovati:
+                miglior_match = match_trovati[0]
+                codice_trovato = mappa_desc_to_cod.get(
+                    miglior_match.upper(), "N/D"
+                )
+                # Aggiorniamo anche la descrizione in tabella con quella ufficiale pulita del listino
+                riga["DESCRIZIONE"] = miglior_match
 
-              cod_attuale = str(riga.get("COD_ARTICOLO", "")).strip()
-              desc_estratta = str(riga.get("DESCRIZIONE", "")).strip().upper()
-
-              # Se il codice è vuoto o N/D, proviamo a cercarlo tramite la descrizione esatta pulita
-              if (
-                  not cod_attuale
-                  or cod_attuale in ["N/D", "None"]
-                  or cod_attuale == ""
-              ):
-                if desc_estratta in mappa_disc_to_cod:
-                  riga["COD_ARTICOLO"] = mappa_disc_to_cod[desc_estratta]
-                else:
-                  # Tentativo di match parziale (se la descrizione estratta contiene parte di quella ufficiale o viceversa)
-                  for desc_uff, cod_uff in mappa_disc_to_cod.items():
-                    if (
-                        desc_estratta
-                        and (
-                            desc_estratta in desc_uff
-                            or desc_uff in desc_estratta
-                        )
-                        and len(desc_estratta) > 3
-                    ):
-                      riga["COD_ARTICOLO"] = cod_uff
-                      break
+            riga["COD_ARTICOLO"] = codice_trovato
 
           st.session_state.dati.extend(nuovi_dati)
           totale_aggiunti += len(nuovi_dati)
 
         st.success(
             f"Elaborati {len(uploaded_files)} file con abbinamento"
-            f" intelligente! Aggiunte {totale_aggiunti} righe."
+            f" automatico! Aggiunte {totale_aggiunti} righe."
         )
         st.rerun()
 
