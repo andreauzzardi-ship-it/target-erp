@@ -21,7 +21,7 @@ page_title="Target ERP - Lettore Ordini",
 layout="wide"
 )
 
-BASE_DIR = Path(**file**).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent
 
 FILE_CLIENTI = BASE_DIR / "clienti.xlsx"
 FILE_ARTICOLI = BASE_DIR / "articoli.xlsx"
