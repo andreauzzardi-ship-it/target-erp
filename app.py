@@ -1,14 +1,14 @@
+import base64
+import io
 import json
 import re
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 from google import genai
-
-except ImportError:
-genai = None
 
 # ============================================================
 
