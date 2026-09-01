@@ -2033,4 +2033,3 @@ with st.expander(
         st.warning(
             "listino.pdf non trovato"
         )
-```
