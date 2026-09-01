@@ -409,3 +409,28 @@ st.download_button(
     file_name="gestione_ordini.csv",
     mime="text/csv"
 )
+import streamlit as st
+
+st.sidebar.title("📁 Gestione Listini")
+# Campo per inserire l'ID della cartella o un link rapido
+folder_id_input = st.sidebar.text_input(
+    "ID Cartella Google Drive",
+    value="1Eq1Et_riXqsoU0JNzdXhQlSXGYF4D0LG",
+    help="ID della cartella Google Drive con i cataloghi",
+)
+
+st.sidebar.info(
+    "💡 *Consiglio:* Se i file su Drive sono impostati su 'Chiunque abbia il link può visualizzare', puoi caricarli al volo o collegarli qui."
+)
+
+# Area di upload di supporto nel caso un listino sia locale o troppo pesante
+uploaded_files = st.sidebar.file_uploader(
+    "Oppure carica i listini direttamente qui",
+    type=["pdf", "xlsx", "csv"],
+    accept_multiple_files=True,
+)
+
+if uploaded_files:
+  st.sidebar.success(f"Caricati {len(uploaded_files)} file con successo!")
+  # Qui puoi salvare i file in st.session_state per passarli a Victoria
+  st.session_state["listini_caricati"] = uploaded_files
