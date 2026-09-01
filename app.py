@@ -340,7 +340,7 @@ with tab_upload:
       "⚡ Analizza File ed Inserisci in Tabella", type="primary"
   ):
     with st.spinner(
-        "Analisi documenti e abbinamento rigoroso codici/articoli in corso..."
+        "Analisi documenti e abbinamento intelligente in corso..."
     ):
       try:
         if "dati" not in st.session_state:
@@ -348,21 +348,18 @@ with tab_upload:
 
         totale_aggiunti = 0
 
-        # Prepariamo un dizionario o una lista chiara e pulita degli articoli reali da passare al prompt
         catalogo_rigido = ""
         if not df_articoli.empty and col_art_trovata and col_desc_trovata:
-          # Prendiamo i campi chiave puliti
           df_catalogo_clean = df_articoli[
               [col_art_trovata, col_desc_trovata]
           ].dropna()
           catalogo_rigido = (
-              "\nLISTINO UFFICIALE DI RIFERIMENTO (Usa ESATTAMENTE questi"
-              " codici in base alla descrizione):\n"
+              "\nLISTINO UFFICIALE DI RIFERIMENTO (Cerca per corrispondenza"
+              " anche parziale o semantica della descrizione):\n"
               + df_catalogo_clean.to_string(index=False)
           )
 
-        # Prompt di estrazione ultra-rigido per forzare l'associazione del codice
-        prompt_estrazione_rigido = f"""
+        prompt_estrazione_intelligente = f"""
 Analizza la richiesta per un documento di tipo: {doc_type}.
 
 ELENCO RAGIONI SOCIALI CLIENTE VALIDE:
@@ -371,10 +368,10 @@ ELENCO RAGIONI SOCIALI CLIENTE VALIDE:
 {catalogo_rigido}
 
 REGOLE TASSATIVE PER L'ESTRAZIONE:
-1. Trova l'intestazione o il nome del cliente nel documento e abbinalo all'ELENCO RAGIONI SOCIALI CLIENTE VALIDE (se non lo trovi usa "").
+1. Trova l'intestazione o il cliente nel documento e abbinalo all'ELENCO RAGIONI SOCIALI CLIENTE VALIDE (se non lo trovi usa "").
 2. Per ogni riga articolo trovata nel documento:
-   - Estrai la DESCRIZIONE e la QUANTITA (numero intero) e la DATA_CONSEGNA.
-   - **FONDAMENTALE**: Guarda il LISTINO UFFICIALE DI RIFERIMENTO qui sopra. Cerca la descrizione corrispondente e **copia esattamente il CODICE ARTICOLO (Codart)** associato. Non inventare o lasciare "N/D" se la descrizione corrisponde a un articolo del listino!
+   - Estrai la DESCRIZIONE così come appare, la QUANTITA (numero intero) e la DATA_CONSEGNA.
+   - **ABBINAMENTO CODICE**: Guarda il LISTINO UFFICIALE. Trova l'articolo che corrisponde (anche se la descrizione nel PDF è leggermente abbreviata o diversa) e **copia l'esatto CODICE ARTICOLO (Codart)**. Se hai dubbi ma riconosci il prodotto, metti il codice più probabile dal listino anziché lasciarlo vuoto o "N/D".
 3. Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con le chiavi esatte:
    "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
 """
@@ -388,26 +385,61 @@ REGOLE TASSATIVE PER L'ESTRAZIONE:
           )
 
           res = genera_contenuto_con_fallback(
-              [risorsa_pdf, prompt_estrazione_rigido], json_mode=True
+              [risorsa_pdf, prompt_estrazione_intelligente], json_mode=True
           )
 
           nuovi_dati = json.loads(res.text)
-          for riga in nuevos if "nuevos" in locals() else nuovi_dati:
-            riga["RAGIONE_SOCIALE"] = trova_ragione_sociale_valida(
-                riga.get("RAGIONE_SOCIALE", "")
+
+          # Post-processing di sicurezza in Python per correggere i codici mancanti o disallineati
+          if not df_articoli.empty and col_art_trovata and col_desc_trovata:
+            mappa_disc_to_cod = dict(
+                zip(
+                    df_articoli[col_desc_trovata].astype(str).str.strip().str.upper(),
+                    df_articoli[col_art_trovata].astype(str).str.strip(),
+                )
             )
+            for riga in nuovi_dati:
+              riga["RAGIONE_SOCIALE"] = trova_ragione_sociale_valida(
+                  riga.get("RAGIONE_SOCIALE", "")
+              )
+
+              cod_attuale = str(riga.get("COD_ARTICOLO", "")).strip()
+              desc_estratta = str(riga.get("DESCRIZIONE", "")).strip().upper()
+
+              # Se il codice è vuoto o N/D, proviamo a cercarlo tramite la descrizione esatta pulita
+              if (
+                  not cod_attuale
+                  or cod_attuale in ["N/D", "None"]
+                  or cod_attuale == ""
+              ):
+                if desc_estratta in mappa_disc_to_cod:
+                  riga["COD_ARTICOLO"] = mappa_disc_to_cod[desc_estratta]
+                else:
+                  # Tentativo di match parziale (se la descrizione estratta contiene parte di quella ufficiale o viceversa)
+                  for desc_uff, cod_uff in mappa_disc_to_cod.items():
+                    if (
+                        desc_estratta
+                        and (
+                            desc_estratta in desc_uff
+                            or desc_uff in desc_estratta
+                        )
+                        and len(desc_estratta) > 3
+                    ):
+                      riga["COD_ARTICOLO"] = cod_uff
+                      break
 
           st.session_state.dati.extend(nuovi_dati)
           totale_aggiunti += len(nuovi_dati)
 
         st.success(
-            f"Elaborati {len(uploaded_files)} file con abbinamento codici!"
-            f" Aggiunte {totale_aggiunti} righe."
+            f"Elaborati {len(uploaded_files)} file con abbinamento"
+            f" intelligente! Aggiunte {totale_aggiunti} righe."
         )
         st.rerun()
 
       except Exception as e:
         st.error(f"Errore durante l'analisi dei file: {e}")
+
 # ==============================================================================
 # 7. TABELLA PRINCIPALE DI GESTIONE
 # ==============================================================================
