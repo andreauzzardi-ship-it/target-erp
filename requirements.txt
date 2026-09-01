@@ -1,4 +1,6 @@
 streamlit
 pandas
 openpyxl
-openai
+pypdf
+Pillow
+pytesseract
