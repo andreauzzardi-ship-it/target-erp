@@ -5,9 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-
-try:
 from google import genai
+
 except ImportError:
 genai = None
 
