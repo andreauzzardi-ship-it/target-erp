@@ -330,73 +330,50 @@ Per RAGIONE_SOCIALE se non la trovi usa "". Per gli altri campi non trovati usa 
 """
 
 with tab_upload:
-  uploaded_file = st.file_uploader(
+  uploaded_files = st.file_uploader(
       "Trascina file (PDF o Immagine)",
       type=["pdf", "jpg", "png", "jpeg"],
+      accept_multiple_files=True,  # <--- ABILITA IL CARICAMENTO MULTIPLO
       label_visibility="collapsed",
   )
-  if uploaded_file and st.button(
+  if uploaded_files and st.button(
       "⚡ Analizza File ed Inserisci in Tabella", type="primary"
   ):
-    with st.spinner("Lettura ed estrazione dati dal file in corso..."):
+    with st.spinner("Lettura ed estrazione dati dai file in corso..."):
       try:
-        file_bytes = uploaded_file.read()
-        mime_type = uploaded_file.type
-
-        res = genera_contenuto_con_fallback(
-            [
-                types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-                prompt_base_estrazione,
-            ],
-            json_mode=True,
-        )
-
-        nuovi_dati = json.loads(res.text)
-        for riga in nuovi_dati:
-          riga["RAGIONE_SOCIALE"] = trova_ragione_sociale_valida(
-              riga.get("RAGIONE_SOCIALE", "")
-          )
-
         if "dati" not in st.session_state:
           st.session_state.dati = []
 
-        st.session_state.dati.extend(nuovi_dati)
-        st.success("Dati estratti dal file e aggiunti alla tabella!")
-        st.rerun()
+        totale_aggiunti = 0
+        for uploaded_file in uploaded_files:
+          file_bytes = uploaded_file.read()
+          mime_type = uploaded_file.type
 
-      except Exception as e:
-        st.error(f"Errore durante l'analisi del file: {e}")
-
-with tab_text:
-  email_text = st.text_area(
-      "Incolla qui il testo dell'email o del documento...", height=130
-  )
-  if st.button("⚡ Analizza Email ed Inserisci in Tabella", type="primary"):
-    if email_text.strip():
-      with st.spinner("Estrazione dati dall'email in corso..."):
-        try:
           res = genera_contenuto_con_fallback(
-              f"{prompt_base_estrazione}\n\nTesto:\n{email_text}", json_mode=True
+              [
+                  types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+                  prompt_base_estrazione,
+              ],
+              json_mode=True,
           )
+
           nuovi_dati = json.loads(res.text)
           for riga in nuovi_dati:
             riga["RAGIONE_SOCIALE"] = trova_ragione_sociale_valida(
                 riga.get("RAGIONE_SOCIALE", "")
             )
 
-          if "dati" not in st.session_state:
-            st.session_state.dati = []
-
           st.session_state.dati.extend(nuovi_dati)
-          st.success("Dati estratti e aggiunti alla tabella!")
-          st.rerun()
-        except Exception as e:
-          st.error(f"Errore durante l'estrazione: {e}")
-    else:
-      st.warning("Incolla il testo prima di procedere con l'analisi.")
+          totale_aggiunti += len(nuovi_dati)
 
-st.divider()
+        st.success(
+            f"Elaborati {len(uploaded_files)} file! Aggiunte {totale_aggiunti}"
+            " righe alla tabella."
+        )
+        st.rerun()
 
+      except Exception as e:
+        st.error(f"Errore durante l'analisi dei file: {e}")
 # ==============================================================================
 # 7. TABELLA PRINCIPALE DI GESTIONE
 # ==============================================================================
