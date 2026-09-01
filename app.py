@@ -1,24 +1,26 @@
-import base64
-import io
 import json
 import re
-import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from google import genai
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None
+    types = None
+
 
 # ============================================================
-
 # CONFIGURAZIONE
-
 # ============================================================
 
 st.set_page_config(
-page_title="Target ERP - Lettore Ordini",
-layout="wide"
+    page_title="Target ERP - Lettore Ordini",
+    layout="wide"
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -26,1691 +28,1671 @@ BASE_DIR = Path(__file__).resolve().parent
 FILE_CLIENTI = BASE_DIR / "clienti.xlsx"
 FILE_ARTICOLI = BASE_DIR / "articoli.xlsx"
 
-MODELLO_GEMINI = "gemini-3.7-flash"
+MODELLO_GEMINI = "gemini-2.5-flash"
+
 
 # ============================================================
-
 # CSS
-
 # ============================================================
 
 st.markdown(
-""" <style>
-footer,
-#MainMenu,
-header,
-[data-testid="stHeader"],
-[data-testid="stToolbar"],
-[data-testid="stStatusWidget"] {
-display: none !important;
-}
+    """
+    <style>
+    footer,
+    #MainMenu,
+    header,
+    [data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    [data-testid="stStatusWidget"] {
+        display: none !important;
+    }
 
-```
-.stDataFrame {
-    width: 100%;
-}
+    .match-ok {
+        padding: 8px;
+        border-radius: 6px;
+        background-color: #dff6e4;
+    }
 
-.stAlert {
-    border-radius: 8px;
-}
-</style>
-""",
-unsafe_allow_html=True
+    .match-warning {
+        padding: 8px;
+        border-radius: 6px;
+        background-color: #fff3cd;
+    }
 
-
+    .match-error {
+        padding: 8px;
+        border-radius: 6px;
+        background-color: #f8d7da;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
+
 # ============================================================
-
 # CLIENT GEMINI
-
 # ============================================================
 
 @st.cache_resource
 def get_gemini_client():
+    if genai is None:
+        return None
 
-if genai is None:
-    return None
-
-try:
-
-    api_key = st.secrets.get("GEMINI_API_KEY")
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
 
     if not api_key:
         return None
 
-    return genai.Client(
-        api_key=api_key
-    )
+    try:
+        return genai.Client(api_key=api_key)
+    except Exception:
+        return None
 
-except Exception:
-    return None
-```
 
 client = get_gemini_client()
 
-# ============================================================
-
-# FUNZIONI TESTO
 
 # ============================================================
+# FUNZIONI GENERALI
+# ============================================================
 
-def pulisci_testo(valore):
-
-```
-if valore is None:
-    return ""
-
-try:
-    if pd.isna(valore):
+def pulisci_testo(value):
+    if value is None:
         return ""
-except Exception:
-    pass
 
-testo = str(valore).strip()
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
 
-testo = re.sub(
-    r"\s+",
-    " ",
-    testo
-)
+    return re.sub(r"\s+", " ", str(value).strip())
 
-if testo.lower() in [
-    "nan",
-    "none",
-    "null",
-    "n/d",
-    "nd",
-    "n.a.",
-    "na"
-]:
-    return ""
 
-return testo
-```
+def normalizza_chiave(value):
+    value = pulisci_testo(value).upper()
 
-def chiave(valore):
+    sostituzioni = {
+        "À": "A",
+        "Á": "A",
+        "È": "E",
+        "É": "E",
+        "Ì": "I",
+        "Í": "I",
+        "Ò": "O",
+        "Ó": "O",
+        "Ù": "U",
+        "Ú": "U",
+    }
 
-```
-testo = pulisci_testo(
-    valore
-).upper()
+    for vecchio, nuovo in sostituzioni.items():
+        value = value.replace(vecchio, nuovo)
 
-sostituzioni = {
-    "À": "A",
-    "Á": "A",
-    "È": "E",
-    "É": "E",
-    "Ì": "I",
-    "Í": "I",
-    "Ò": "O",
-    "Ó": "O",
-    "Ù": "U",
-    "Ú": "U"
-}
+    return re.sub(r"[^A-Z0-9]", "", value)
 
-for vecchio, nuovo in sostituzioni.items():
-    testo = testo.replace(
-        vecchio,
-        nuovo
-    )
-
-return re.sub(
-    r"[^A-Z0-9]",
-    "",
-    testo
-)
-```
 
 def similarita(a, b):
+    a = normalizza_chiave(a)
+    b = normalizza_chiave(b)
 
-```
-a = chiave(a)
-b = chiave(b)
+    if not a or not b:
+        return 0.0
 
-if not a or not b:
-    return 0
+    if a == b:
+        return 1.0
 
-if a == b:
-    return 1.0
+    return SequenceMatcher(None, a, b).ratio()
 
-return SequenceMatcher(
-    None,
-    a,
-    b
-).ratio()
-```
 
 # ============================================================
-
 # CARICAMENTO EXCEL
-
 # ============================================================
 
 @st.cache_data
 def carica_excel(percorso):
-
-```
-try:
-
     percorso = Path(percorso)
 
     if not percorso.exists():
         return pd.DataFrame()
 
-    df = pd.read_excel(
-        percorso
-    )
+    try:
+        df = pd.read_excel(percorso)
 
-    if df.empty:
+        if df.empty:
+            return pd.DataFrame()
+
+        df.columns = [
+            str(colonna).strip()
+            for colonna in df.columns
+        ]
+
+        return df
+
+    except Exception:
         return pd.DataFrame()
 
-    df.columns = (
-        df.columns
-        .astype(str)
-        .str.strip()
-    )
 
-    return df
+df_clienti = carica_excel(FILE_CLIENTI)
+df_articoli = carica_excel(FILE_ARTICOLI)
 
-except Exception:
-    return pd.DataFrame()
-```
-
-df_clienti = carica_excel(
-FILE_CLIENTI
-)
-
-df_articoli = carica_excel(
-FILE_ARTICOLI
-)
 
 # ============================================================
-
-# TROVA COLONNA
-
+# RICERCA COLONNE EXCEL
 # ============================================================
 
-def trova_colonna(
-df,
-possibili
-):
+def trova_colonna(df, possibili):
+    if df.empty:
+        return None
 
-```
-if df.empty:
+    possibili_normalizzati = {
+        normalizza_chiave(x)
+        for x in possibili
+    }
+
+    for colonna in df.columns:
+        if normalizza_chiave(colonna) in possibili_normalizzati:
+            return colonna
+
     return None
 
-possibili_norm = {
-    chiave(x)
-    for x in possibili
-}
 
-for colonna in df.columns:
-
-    if chiave(colonna) in possibili_norm:
-        return colonna
-
-return None
-```
-
-# ============================================================
-
-# COLONNE CLIENTI
-
-# ============================================================
-
-COL_RAGIONE = trova_colonna(
-df_clienti,
-[
-"RAGIONE_SOCIALE",
-"RAGIONE SOCIALE",
-"RAGIONE SOCIALE CLIENTE",
-"CLIENTE",
-"NOME"
-]
+COL_RAGIONE_SOCIALE = trova_colonna(
+    df_clienti,
+    [
+        "RAGIONE_SOCIALE",
+        "RAGIONE SOCIALE",
+        "RAGIONE SOCIALE CLIENTE",
+        "CLIENTE",
+        "NOME",
+    ],
 )
 
-COL_COD_CLIENTE = trova_colonna(
-df_clienti,
-[
-"COD_CLIENTE",
-"CODICE CLIENTE",
-"CODICE",
-"CODCLI"
-]
+COL_CODICE_CLIENTE = trova_colonna(
+    df_clienti,
+    [
+        "COD_CLIENTE",
+        "CODICE CLIENTE",
+        "CODICE",
+        "CODCLI",
+    ],
 )
 
-# ============================================================
-
-# COLONNE ARTICOLI
-
-# ============================================================
-
-COL_COD_ARTICOLO = trova_colonna(
-df_articoli,
-[
-"CODART",
-"COD_ARTICOLO",
-"CODICE ARTICOLO",
-"CODICE"
-]
+COL_CODICE_ARTICOLO = trova_colonna(
+    df_articoli,
+    [
+        "CODART",
+        "COD_ARTICOLO",
+        "CODICE ARTICOLO",
+        "CODICE",
+    ],
 )
 
-COL_DESCRIZIONE = trova_colonna(
-df_articoli,
-[
-"DESCRIZIONE ARTICOLO",
-"DESCRIZIONE",
-"DESCART"
-]
+COL_DESCRIZIONE_ARTICOLO = trova_colonna(
+    df_articoli,
+    [
+        "DESCRIZIONE ARTICOLO",
+        "DESCRIZIONE",
+    ],
 )
 
-# ============================================================
-
-# COSTRUZIONE CLIENTI
 
 # ============================================================
+# CREAZIONE ANAGRAFICHE
+# ============================================================
 
-def costruisci_clienti():
+def crea_clienti():
+    clienti = []
 
-```
-risultati = []
+    if df_clienti.empty:
+        return clienti
 
-if df_clienti.empty:
-    return risultati
+    if not COL_RAGIONE_SOCIALE:
+        return clienti
 
-if not COL_RAGIONE:
-    return risultati
+    for _, riga in df_clienti.iterrows():
 
-for _, riga in df_clienti.iterrows():
-
-    ragione = pulisci_testo(
-        riga.get(
-            COL_RAGIONE,
-            ""
+        ragione = pulisci_testo(
+            riga.get(COL_RAGIONE_SOCIALE, "")
         )
-    )
 
-    if not ragione:
-        continue
+        if not ragione:
+            continue
 
-    codice = ""
+        codice = ""
 
-    if COL_COD_CLIENTE:
-
-        codice = pulisci_testo(
-            riga.get(
-                COL_COD_CLIENTE,
-                ""
+        if COL_CODICE_CLIENTE:
+            codice = pulisci_testo(
+                riga.get(COL_CODICE_CLIENTE, "")
             )
-        )
 
-    risultati.append(
-        {
-            "ragione_sociale": ragione,
-            "codice_cliente": codice
-        }
-    )
-
-return risultati
-```
-
-# ============================================================
-
-# COSTRUZIONE ARTICOLI
-
-# ============================================================
-
-def costruisci_articoli():
-
-```
-risultati = []
-
-if df_articoli.empty:
-    return risultati
-
-if not COL_COD_ARTICOLO:
-    return risultati
-
-for _, riga in df_articoli.iterrows():
-
-    codice = pulisci_testo(
-        riga.get(
-            COL_COD_ARTICOLO,
-            ""
-        )
-    )
-
-    if not codice:
-        continue
-
-    descrizione = ""
-
-    if COL_DESCRIZIONE:
-
-        descrizione = pulisci_testo(
-            riga.get(
-                COL_DESCRIZIONE,
-                ""
-            )
-        )
-
-    risultati.append(
-        {
-            "codice": codice,
-            "descrizione": descrizione
-        }
-    )
-
-return risultati
-```
-
-clienti = costruisci_clienti()
-articoli = costruisci_articoli()
-
-# ============================================================
-
-# MAPPE
-
-# ============================================================
-
-MAPPA_CLIENTI = {
-chiave(x["ragione_sociale"]): x
-for x in clienti
-if chiave(x["ragione_sociale"])
-}
-
-MAPPA_CODICI_CLIENTE = {
-chiave(x["codice_cliente"]): x
-for x in clienti
-if chiave(x["codice_cliente"])
-}
-
-MAPPA_ARTICOLI = {
-chiave(x["codice"]): x
-for x in articoli
-if chiave(x["codice"])
-}
-
-# ============================================================
-
-# CANDIDATI CLIENTE
-
-# ============================================================
-
-def candidati_cliente(
-valore,
-massimo=3
-):
-
-```
-valore = pulisci_testo(
-    valore
-)
-
-if not valore:
-    return []
-
-risultati = []
-
-for cliente in clienti:
-
-    score_nome = similarita(
-        valore,
-        cliente["ragione_sociale"]
-    )
-
-    score_codice = similarita(
-        valore,
-        cliente["codice_cliente"]
-    )
-
-    score = max(
-        score_nome,
-        score_codice
-    )
-
-    if score > 0:
-
-        risultati.append(
+        clienti.append(
             {
-                "valore": cliente[
-                    "ragione_sociale"
-                ],
-                "codice": cliente[
-                    "codice_cliente"
-                ],
-                "score": score
+                "codice": codice,
+                "ragione": ragione,
             }
         )
 
-risultati.sort(
-    key=lambda x: x["score"],
-    reverse=True
-)
+    return clienti
 
-return risultati[:massimo]
-```
+
+def crea_articoli():
+    articoli = []
+
+    if df_articoli.empty:
+        return articoli
+
+    if not COL_CODICE_ARTICOLO:
+        return articoli
+
+    for _, riga in df_articoli.iterrows():
+
+        codice = pulisci_testo(
+            riga.get(COL_CODICE_ARTICOLO, "")
+        )
+
+        if not codice:
+            continue
+
+        descrizione = ""
+
+        if COL_DESCRIZIONE_ARTICOLO:
+            descrizione = pulisci_testo(
+                riga.get(COL_DESCRIZIONE_ARTICOLO, "")
+            )
+
+        articoli.append(
+            {
+                "codice": codice,
+                "descrizione": descrizione,
+            }
+        )
+
+    return articoli
+
+
+CLIENTI = crea_clienti()
+ARTICOLI = crea_articoli()
+
 
 # ============================================================
-
-# CANDIDATI ARTICOLO
-
+# MAPPE VELOCI
 # ============================================================
 
-def candidati_articolo(
-codice,
-descrizione,
-massimo=3
+MAPPA_CLIENTI = {}
+
+for cliente in CLIENTI:
+
+    chiave = normalizza_chiave(
+        cliente["ragione"]
+    )
+
+    if chiave:
+        MAPPA_CLIENTI[chiave] = cliente
+
+
+MAPPA_CODICI_CLIENTE = {}
+
+for cliente in CLIENTI:
+
+    chiave = normalizza_chiave(
+        cliente["codice"]
+    )
+
+    if chiave:
+        MAPPA_CODICI_CLIENTE[chiave] = cliente
+
+
+MAPPA_ARTICOLI = {}
+
+for articolo in ARTICOLI:
+
+    chiave = normalizza_chiave(
+        articolo["codice"]
+    )
+
+    if chiave:
+        MAPPA_ARTICOLI[chiave] = articolo
+
+
+# ============================================================
+# RICERCA CLIENTE
+# ============================================================
+
+def cerca_cliente(valore):
+    valore = pulisci_testo(valore)
+
+    if not valore:
+        return None, []
+
+
+    chiave = normalizza_chiave(valore)
+
+
+    # MATCH ESATTO
+    if chiave in MAPPA_CLIENTI:
+
+        cliente = MAPPA_CLIENTI[chiave]
+
+        return cliente, [
+            (cliente, 1.0)
+        ]
+
+
+    # MATCH CODICE CLIENTE
+    if chiave in MAPPA_CODICI_CLIENTE:
+
+        cliente = MAPPA_CODICI_CLIENTE[chiave]
+
+        return cliente, [
+            (cliente, 1.0)
+        ]
+
+
+    # MATCH CONTENUTO
+    candidati = []
+
+    for cliente in CLIENTI:
+
+        nome = normalizza_chiave(
+            cliente["ragione"]
+        )
+
+        if (
+            chiave in nome
+            or nome in chiave
+        ):
+            candidati.append(
+                (
+                    cliente,
+                    0.95
+                )
+            )
+
+
+    if candidati:
+
+        candidati.sort(
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        return candidati[0][0], candidati[:5]
+
+
+    # FUZZY MATCH
+    for cliente in CLIENTI:
+
+        score = similarita(
+            valore,
+            cliente["ragione"]
+        )
+
+        if score >= 0.55:
+
+            candidati.append(
+                (
+                    cliente,
+                    score
+                )
+            )
+
+
+    candidati.sort(
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+
+    if candidati and candidati[0][1] >= 0.88:
+
+        return candidati[0][0], candidati[:5]
+
+
+    return None, candidati[:5]
+
+
+# ============================================================
+# RICERCA ARTICOLO
+# ============================================================
+
+def cerca_articolo(
+    codice="",
+    descrizione=""
 ):
 
-```
-codice = pulisci_testo(
-    codice
-)
+    codice = pulisci_testo(codice)
+    descrizione = pulisci_testo(descrizione)
 
-descrizione = pulisci_testo(
-    descrizione
-)
 
-risultati = []
-
-for articolo in articoli:
-
-    score_codice = 0
-
-    score_descrizione = 0
+    # ========================================================
+    # 1. CODICE ESATTO
+    # ========================================================
 
     if codice:
 
-        score_codice = similarita(
-            codice,
-            articolo["codice"]
-        )
+        chiave = normalizza_chiave(codice)
+
+        if chiave in MAPPA_ARTICOLI:
+
+            articolo = MAPPA_ARTICOLI[chiave]
+
+            return articolo, [
+                (articolo, 1.0)
+            ]
+
+
+    # ========================================================
+    # 2. DESCRIZIONE
+    # ========================================================
+
+    candidati = []
 
     if descrizione:
 
-        score_descrizione = similarita(
-            descrizione,
-            articolo["descrizione"]
-        )
+        for articolo in ARTICOLI:
 
-    score = max(
-        score_codice,
-        score_descrizione
+            descrizione_excel = articolo["descrizione"]
+
+            if not descrizione_excel:
+                continue
+
+            score = similarita(
+                descrizione,
+                descrizione_excel
+            )
+
+            if score >= 0.55:
+
+                candidati.append(
+                    (
+                        articolo,
+                        score
+                    )
+                )
+
+
+    candidati.sort(
+        key=lambda x: x[1],
+        reverse=True
     )
 
-    if score > 0:
+
+    # Match molto sicuro
+    if candidati and candidati[0][1] >= 0.92:
+
+        return (
+            candidati[0][0],
+            candidati[:5]
+        )
+
+
+    return None, candidati[:5]
+
+
+# ============================================================
+# NORMALIZZA QUANTITÀ
+# ============================================================
+
+def normalizza_quantita(value):
+
+    value = pulisci_testo(value)
+
+    if not value:
+        return ""
+
+    match = re.search(
+        r"\d+(?:[.,]\d+)?",
+        value
+    )
+
+    if not match:
+        return ""
+
+    try:
+
+        numero = float(
+            match.group().replace(",", ".")
+        )
+
+        if numero.is_integer():
+            return int(numero)
+
+        return numero
+
+    except Exception:
+        return ""
+
+
+# ============================================================
+# NORMALIZZA DATA
+# ============================================================
+
+def normalizza_data(value):
+
+    value = pulisci_testo(value)
+
+    if not value:
+        return ""
+
+    try:
+
+        data = pd.to_datetime(
+            value,
+            dayfirst=True,
+            errors="coerce"
+        )
+
+        if pd.isna(data):
+            return ""
+
+        return data.strftime(
+            "%d/%m/%Y"
+        )
+
+    except Exception:
+        return ""
+
+
+# ============================================================
+# SCHEMA JSON GEMINI
+# ============================================================
+
+SCHEMA_ESTRAZIONE = {
+    "type": "object",
+    "properties": {
+        "righe": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+
+                    "COD_CLIENTE": {
+                        "type": "string"
+                    },
+
+                    "RAGIONE_SOCIALE": {
+                        "type": "string"
+                    },
+
+                    "COD_ARTICOLO": {
+                        "type": "string"
+                    },
+
+                    "DESCRIZIONE": {
+                        "type": "string"
+                    },
+
+                    "QUANTITA": {
+                        "type": "string"
+                    },
+
+                    "DATA_CONSEGNA": {
+                        "type": "string"
+                    },
+
+                },
+
+                "required": [
+                    "COD_CLIENTE",
+                    "RAGIONE_SOCIALE",
+                    "COD_ARTICOLO",
+                    "DESCRIZIONE",
+                    "QUANTITA",
+                    "DATA_CONSEGNA",
+                ],
+
+                "additionalProperties": False,
+            },
+        }
+    },
+
+    "required": [
+        "righe"
+    ],
+
+    "additionalProperties": False,
+}
+
+
+# ============================================================
+# PROMPT GEMINI
+# ============================================================
+
+PROMPT_ESTRAZIONE = """
+Sei il lettore documentale di Target ERP.
+
+Devi leggere un ordine cliente o una richiesta commerciale.
+
+Devi estrarre TUTTE le righe articolo presenti.
+
+Per ogni riga estrai:
+
+COD_CLIENTE
+RAGIONE_SOCIALE
+COD_ARTICOLO
+DESCRIZIONE
+QUANTITA
+DATA_CONSEGNA
+
+REGOLE IMPORTANTI:
+
+1. Non inventare dati.
+
+2. Se un dato non è presente o non è leggibile,
+   restituisci una stringa vuota.
+
+3. Il codice articolo deve essere copiato
+   esattamente come appare nel documento.
+
+4. La descrizione deve essere copiata
+   esattamente dal documento quando disponibile.
+
+5. Non confondere il codice cliente con il codice articolo.
+
+6. Non confondere il numero dell'ordine con il codice articolo.
+
+7. Ogni articolo deve essere una riga separata.
+
+8. Non sommare articoli diversi.
+
+9. Se ci sono 10 articoli devi restituire 10 righe.
+
+10. Restituisci esclusivamente il JSON richiesto.
+"""
+
+
+# ============================================================
+# ANALISI FILE
+# ============================================================
+
+def analizza_file(uploaded_file):
+
+    if client is None:
+
+        raise RuntimeError(
+            "Gemini non è configurato. "
+            "Controlla GEMINI_API_KEY nei Secrets di Streamlit."
+        )
+
+
+    file_bytes = uploaded_file.getvalue()
+
+    if not file_bytes:
+
+        raise ValueError(
+            "Il file caricato è vuoto."
+        )
+
+
+    mime_type = (
+        uploaded_file.type
+        or "application/octet-stream"
+    )
+
+
+    if mime_type == "application/pdf":
+
+        parte_file = types.Part.from_bytes(
+            data=file_bytes,
+            mime_type="application/pdf"
+        )
+
+    elif mime_type.startswith("image/"):
+
+        parte_file = types.Part.from_bytes(
+            data=file_bytes,
+            mime_type=mime_type
+        )
+
+    else:
+
+        raise ValueError(
+            "Formato file non supportato."
+        )
+
+
+    response = client.models.generate_content(
+
+        model=MODELLO_GEMINI,
+
+        contents=[
+            PROMPT_ESTRAZIONE,
+            parte_file,
+        ],
+
+        config=types.GenerateContentConfig(
+
+            response_mime_type="application/json",
+
+            response_schema=SCHEMA_ESTRAZIONE,
+        ),
+    )
+
+
+    testo_risposta = response.text
+
+
+    try:
+
+        risultato = json.loads(
+            testo_risposta
+        )
+
+    except Exception as exc:
+
+        raise ValueError(
+            "Gemini non ha restituito "
+            f"un JSON valido: {exc}"
+        )
+
+
+    return elabora_righe(
+        risultato.get(
+            "righe",
+            []
+        )
+    )
+
+
+# ============================================================
+# ANALISI EMAIL
+# ============================================================
+
+def analizza_email(testo_email):
+
+    if client is None:
+
+        raise RuntimeError(
+            "Gemini non è configurato. "
+            "Controlla GEMINI_API_KEY nei Secrets di Streamlit."
+        )
+
+
+    testo_email = pulisci_testo(
+        testo_email
+    )
+
+
+    if not testo_email:
+
+        raise ValueError(
+            "Il testo dell'email è vuoto."
+        )
+
+
+    response = client.models.generate_content(
+
+        model=MODELLO_GEMINI,
+
+        contents=[
+            PROMPT_ESTRAZIONE,
+            "TESTO DELL'ORDINE:\n"
+            + testo_email,
+        ],
+
+        config=types.GenerateContentConfig(
+
+            response_mime_type="application/json",
+
+            response_schema=SCHEMA_ESTRAZIONE,
+        ),
+    )
+
+
+    try:
+
+        risultato = json.loads(
+            response.text
+        )
+
+    except Exception as exc:
+
+        raise ValueError(
+            "Gemini non ha restituito "
+            f"un JSON valido: {exc}"
+        )
+
+
+    return elabora_righe(
+        risultato.get(
+            "righe",
+            []
+        )
+    )
+
+
+# ============================================================
+# ELABORAZIONE RIGHE
+# ============================================================
+
+def elabora_righe(righe):
+
+    risultati = []
+
+
+    for record in righe:
+
+        if not isinstance(
+            record,
+            dict
+        ):
+            continue
+
+
+        # ====================================================
+        # DATI GREZZI GEMINI
+        # ====================================================
+
+        ragione_gemini = pulisci_testo(
+            record.get(
+                "RAGIONE_SOCIALE",
+                ""
+            )
+        )
+
+
+        codice_cliente_gemini = pulisci_testo(
+            record.get(
+                "COD_CLIENTE",
+                ""
+            )
+        )
+
+
+        codice_articolo_gemini = pulisci_testo(
+            record.get(
+                "COD_ARTICOLO",
+                ""
+            )
+        )
+
+
+        descrizione_gemini = pulisci_testo(
+            record.get(
+                "DESCRIZIONE",
+                ""
+            )
+        )
+
+
+        quantita_gemini = normalizza_quantita(
+            record.get(
+                "QUANTITA",
+                ""
+            )
+        )
+
+
+        data_gemini = normalizza_data(
+            record.get(
+                "DATA_CONSEGNA",
+                ""
+            )
+        )
+
+
+        # ====================================================
+        # CLIENTE
+        # ====================================================
+
+        cliente, clienti_simili = cerca_cliente(
+            ragione_gemini
+        )
+
+
+        if cliente is None:
+
+            cliente, clienti_simili = cerca_cliente(
+                codice_cliente_gemini
+            )
+
+
+        if cliente:
+
+            codice_cliente = cliente["codice"]
+            ragione_sociale = cliente["ragione"]
+
+            conf_cliente = (
+                clienti_simili[0][1]
+                if clienti_simili
+                else 1.0
+            )
+
+        else:
+
+            codice_cliente = codice_cliente_gemini
+            ragione_sociale = ragione_gemini
+            conf_cliente = (
+                clienti_simili[0][1]
+                if clienti_simili
+                else 0.0
+            )
+
+
+        # ====================================================
+        # ARTICOLO
+        # ====================================================
+
+        articolo, articoli_simili = cerca_articolo(
+
+            codice=codice_articolo_gemini,
+
+            descrizione=descrizione_gemini
+        )
+
+
+        if articolo:
+
+            codice_articolo = articolo["codice"]
+
+            # IMPORTANTE:
+            # quando troviamo il codice nell'anagrafica,
+            # la descrizione ufficiale viene presa
+            # direttamente da articoli.xlsx.
+
+            descrizione = articolo["descrizione"]
+
+            conf_articolo = (
+                articoli_simili[0][1]
+                if articoli_simili
+                else 1.0
+            )
+
+        else:
+
+            codice_articolo = codice_articolo_gemini
+
+            descrizione = descrizione_gemini
+
+            conf_articolo = (
+                articoli_simili[0][1]
+                if articoli_simili
+                else 0.0
+            )
+
 
         risultati.append(
             {
-                "codice": articolo[
-                    "codice"
-                ],
-                "descrizione": articolo[
-                    "descrizione"
-                ],
-                "score": score
+                "COD_CLIENTE":
+                    codice_cliente,
+
+                "RAGIONE_SOCIALE":
+                    ragione_sociale,
+
+                "COD_ARTICOLO":
+                    codice_articolo,
+
+                "DESCRIZIONE":
+                    descrizione,
+
+                "QUANTITA":
+                    quantita_gemini,
+
+                "DATA_CONSEGNA":
+                    data_gemini,
+
+                "_CONF_CLIENTE":
+                    conf_cliente,
+
+                "_CONF_ARTICOLO":
+                    conf_articolo,
+
+                "_CLIENTI_SIMILI":
+                    clienti_simili,
+
+                "_ARTICOLI_SIMILI":
+                    articoli_simili,
             }
         )
 
-risultati.sort(
-    key=lambda x: x["score"],
-    reverse=True
-)
 
-return risultati[:massimo]
-```
+    return risultati
+
 
 # ============================================================
-
-# VALIDAZIONE CLIENTE
-
-# ============================================================
-
-def valida_cliente(
-cliente_estratto,
-codice_estratto
-):
-
-```
-cliente_estratto = pulisci_testo(
-    cliente_estratto
-)
-
-codice_estratto = pulisci_testo(
-    codice_estratto
-)
-
-# MATCH ESATTO NOME
-
-if cliente_estratto:
-
-    trovato = MAPPA_CLIENTI.get(
-        chiave(cliente_estratto)
-    )
-
-    if trovato:
-
-        return {
-            "codice_cliente":
-                trovato["codice_cliente"],
-
-            "ragione_sociale":
-                trovato["ragione_sociale"],
-
-            "stato":
-                "OK",
-
-            "candidati":
-                []
-        }
-
-# MATCH ESATTO CODICE
-
-if codice_estratto:
-
-    trovato = MAPPA_CODICI_CLIENTE.get(
-        chiave(codice_estratto)
-    )
-
-    if trovato:
-
-        return {
-            "codice_cliente":
-                trovato["codice_cliente"],
-
-            "ragione_sociale":
-                trovato["ragione_sociale"],
-
-            "stato":
-                "OK",
-
-            "candidati":
-                []
-        }
-
-# CANDIDATI
-
-candidati = candidati_cliente(
-    cliente_estratto or codice_estratto
-)
-
-if candidati:
-
-    migliore = candidati[0]
-
-    if migliore["score"] >= 0.90:
-
-        return {
-            "codice_cliente":
-                migliore["codice"],
-
-            "ragione_sociale":
-                migliore["valore"],
-
-            "stato":
-                "VERIFICA",
-
-            "candidati":
-                candidati
-        }
-
-    return {
-        "codice_cliente": "",
-        "ragione_sociale": cliente_estratto,
-        "stato": "NON TROVATO",
-        "candidati": candidati
-    }
-
-return {
-    "codice_cliente": "",
-    "ragione_sociale": cliente_estratto,
-    "stato": "NON TROVATO",
-    "candidati": []
-}
-```
-
-# ============================================================
-
-# VALIDAZIONE ARTICOLO
-
-# ============================================================
-
-def valida_articolo(
-codice_estratto,
-descrizione_estratta
-):
-
-```
-codice_estratto = pulisci_testo(
-    codice_estratto
-)
-
-descrizione_estratta = pulisci_testo(
-    descrizione_estratta
-)
-
-# --------------------------------------------------------
-# MATCH ESATTO CODICE
-# --------------------------------------------------------
-
-if codice_estratto:
-
-    trovato = MAPPA_ARTICOLI.get(
-        chiave(codice_estratto)
-    )
-
-    if trovato:
-
-        return {
-            "codice":
-                trovato["codice"],
-
-            "descrizione":
-                trovato["descrizione"],
-
-            "stato":
-                "OK",
-
-            "candidati":
-                []
-        }
-
-# --------------------------------------------------------
-# MATCH ESATTO DESCRIZIONE
-# --------------------------------------------------------
-
-if descrizione_estratta:
-
-    for articolo in articoli:
-
-        if (
-            chiave(
-                articolo["descrizione"]
-            )
-            ==
-            chiave(
-                descrizione_estratta
-            )
-        ):
-
-            return {
-                "codice":
-                    articolo["codice"],
-
-                "descrizione":
-                    articolo["descrizione"],
-
-                "stato":
-                    "OK",
-
-                "candidati":
-                    []
-            }
-
-# --------------------------------------------------------
-# CANDIDATI
-# --------------------------------------------------------
-
-candidati = candidati_articolo(
-    codice_estratto,
-    descrizione_estratta
-)
-
-if candidati:
-
-    migliore = candidati[0]
-
-    if migliore["score"] >= 0.92:
-
-        return {
-            "codice":
-                migliore["codice"],
-
-            "descrizione":
-                migliore["descrizione"],
-
-            "stato":
-                "VERIFICA",
-
-            "candidati":
-                candidati
-        }
-
-    return {
-        "codice":
-            codice_estratto,
-
-        "descrizione":
-            descrizione_estratta,
-
-        "stato":
-            "NON TROVATO",
-
-        "candidati":
-            candidati
-    }
-
-return {
-    "codice":
-        codice_estratto,
-
-    "descrizione":
-        descrizione_estratta,
-
-    "stato":
-        "NON TROVATO",
-
-    "candidati":
-        []
-}
-```
-
-# ============================================================
-
-# NORMALIZZA QUANTITÀ
-
-# ============================================================
-
-def normalizza_quantita(
-valore
-):
-
-```
-valore = pulisci_testo(
-    valore
-)
-
-if not valore:
-    return ""
-
-match = re.search(
-    r"\d+(?:[.,]\d+)?",
-    valore
-)
-
-if not match:
-    return ""
-
-try:
-
-    numero = float(
-        match.group().replace(
-            ",",
-            "."
-        )
-    )
-
-    if numero.is_integer():
-        return int(numero)
-
-    return numero
-
-except Exception:
-    return ""
-```
-
-# ============================================================
-
-# NORMALIZZA DATA
-
-# ============================================================
-
-def normalizza_data(
-valore
-):
-
-```
-valore = pulisci_testo(
-    valore
-)
-
-if not valore:
-    return ""
-
-try:
-
-    data = pd.to_datetime(
-        valore,
-        dayfirst=True,
-        errors="coerce"
-    )
-
-    if pd.isna(data):
-        return ""
-
-    return data.strftime(
-        "%d/%m/%Y"
-    )
-
-except Exception:
-    return ""
-```
-
-# ============================================================
-
-# PROMPT GEMINI
-
-# ============================================================
-
-PROMPT_BASE = """
-Sei il lettore documentale di Target ERP.
-
-Devi leggere un ordine cliente.
-
-ESTRAI ESCLUSIVAMENTE le informazioni realmente
-presenti nel documento.
-
-NON devi inventare codici.
-
-NON devi correggere i codici.
-
-NON devi scegliere un codice dal tuo ragionamento.
-
-Se il codice è poco leggibile, riportalo esattamente
-per quanto possibile.
-
-Per ogni riga articolo estrai:
-
-* COD_CLIENTE
-* RAGIONE_SOCIALE
-* COD_ARTICOLO
-* DESCRIZIONE
-* QUANTITA
-* DATA_CONSEGNA
-
-IMPORTANTE:
-
-Se ci sono 10 articoli, devi restituire 10 righe.
-
-Non sommare articoli diversi.
-
-Non eliminare righe duplicate.
-
-Se un'informazione non è presente,
-restituisci una stringa vuota.
-
-Restituisci esclusivamente JSON nel seguente formato:
-
-{
-"righe": [
-{
-"COD_CLIENTE": "",
-"RAGIONE_SOCIALE": "",
-"COD_ARTICOLO": "",
-"DESCRIZIONE": "",
-"QUANTITA": "",
-"DATA_CONSEGNA": ""
-}
-]
-}
-"""
-
-# ============================================================
-
-# PARSING JSON GEMINI
-
-# ============================================================
-
-def estrai_json(
-testo
-):
-
-````
-testo = testo.strip()
-
-# Rimuove eventuali markdown
-
-testo = re.sub(
-    r"^```json\s*",
-    "",
-    testo,
-    flags=re.IGNORECASE
-)
-
-testo = re.sub(
-    r"\s*```$",
-    "",
-    testo
-)
-
-try:
-
-    return json.loads(
-        testo
-    )
-
-except Exception:
-
-    inizio = testo.find(
-        "{"
-    )
-
-    fine = testo.rfind(
-        "}"
-    )
-
-    if (
-        inizio >= 0
-        and fine > inizio
-    ):
-
-        return json.loads(
-            testo[
-                inizio:fine + 1
-            ]
-        )
-
-raise ValueError(
-    "Gemini non ha restituito "
-    "un JSON valido."
-)
-````
-
-# ============================================================
-
-# ANALISI PDF
-
-# ============================================================
-
-def analizza_pdf(
-uploaded_file
-):
-
-```
-if not client:
-
-    raise RuntimeError(
-        "GEMINI_API_KEY non configurata."
-    )
-
-file_bytes = uploaded_file.getvalue()
-
-if not file_bytes:
-
-    raise ValueError(
-        "Il PDF è vuoto."
-    )
-
-# Upload tramite Files API
-# Metodo ufficiale Gemini per i PDF.
-
-file_gemini = client.files.upload(
-    file=uploaded_file
-)
-
-response = client.models.generate_content(
-    model=MODELLO_GEMINI,
-    contents=[
-        PROMPT_BASE,
-        file_gemini
-    ]
-)
-
-return estrai_json(
-    response.text
-)
-```
-
-# ============================================================
-
-# ANALISI EMAIL
-
-# ============================================================
-
-def analizza_email(
-testo_email
-):
-
-```
-if not client:
-
-    raise RuntimeError(
-        "GEMINI_API_KEY non configurata."
-    )
-
-prompt = (
-    PROMPT_BASE
-    + "\n\nTESTO DELL'EMAIL:\n"
-    + testo_email
-)
-
-response = client.models.generate_content(
-    model=MODELLO_GEMINI,
-    contents=prompt
-)
-
-return estrai_json(
-    response.text
-)
-```
-
-# ============================================================
-
-# ELABORAZIONE RIGHE
-
-# ============================================================
-
-def elabora_righe(
-risultato
-):
-
-```
-righe = risultato.get(
-    "righe",
-    []
-)
-
-risultati = []
-
-for indice, riga in enumerate(
-    righe,
-    start=1
-):
-
-    if not isinstance(
-        riga,
-        dict
-    ):
-        continue
-
-    cliente = valida_cliente(
-        riga.get(
-            "RAGIONE_SOCIALE",
-            ""
-        ),
-        riga.get(
-            "COD_CLIENTE",
-            ""
-        )
-    )
-
-    articolo = valida_articolo(
-        riga.get(
-            "COD_ARTICOLO",
-            ""
-        ),
-        riga.get(
-            "DESCRIZIONE",
-            ""
-        )
-    )
-
-    stato_cliente = cliente[
-        "stato"
-    ]
-
-    stato_articolo = articolo[
-        "stato"
-    ]
-
-    if (
-        stato_cliente == "OK"
-        and stato_articolo == "OK"
-    ):
-
-        stato = "✅ OK"
-
-    elif (
-        stato_cliente == "NON TROVATO"
-        or stato_articolo == "NON TROVATO"
-    ):
-
-        stato = "❌ DA VERIFICARE"
-
-    else:
-
-        stato = "⚠️ POSSIBILE CORRISPONDENZA"
-
-    risultati.append(
-        {
-            "RIGA":
-                indice,
-
-            "COD_CLIENTE":
-                cliente[
-                    "codice_cliente"
-                ],
-
-            "RAGIONE_SOCIALE":
-                cliente[
-                    "ragione_sociale"
-                ],
-
-            "COD_ARTICOLO":
-                articolo[
-                    "codice"
-                ],
-
-            "DESCRIZIONE":
-                articolo[
-                    "descrizione"
-                ],
-
-            "QUANTITA":
-                normalizza_quantita(
-                    riga.get(
-                        "QUANTITA",
-                        ""
-                    )
-                ),
-
-            "DATA_CONSEGNA":
-                normalizza_data(
-                    riga.get(
-                        "DATA_CONSEGNA",
-                        ""
-                    )
-                ),
-
-            "STATO":
-                stato,
-
-            "_CANDIDATI_CLIENTE":
-                cliente[
-                    "candidati"
-                ],
-
-            "_CANDIDATI_ARTICOLO":
-                articolo[
-                    "candidati"
-                ]
-        }
-    )
-
-return risultati
-```
-
-# ============================================================
-
 # SESSION STATE
-
 # ============================================================
 
-if "righe" not in st.session_state:
-st.session_state.righe = []
+if "dati" not in st.session_state:
 
-if "dati_analisi" not in st.session_state:
-st.session_state.dati_analisi = []
+    st.session_state.dati = []
+
 
 # ============================================================
-
 # HEADER
-
 # ============================================================
 
 st.title(
-"📦 Target ERP — Lettore Ordini"
+    "📦 Target ERP — Smart Order Reader"
 )
 
 st.caption(
-"Importa un ordine PDF oppure incolla "
-"il testo dell'email."
+    "Lettura automatica di ordini PDF e email "
+    "con confronto intelligente con le anagrafiche."
 )
 
-# ============================================================
-
-# STATO SISTEMA
 
 # ============================================================
-
-with st.expander(
-"ℹ️ Stato sistema",
-expanded=False
-):
-
-```
-c1, c2, c3 = st.columns(3)
-
-with c1:
-
-    st.metric(
-        "Clienti",
-        len(clienti)
-    )
-
-with c2:
-
-    st.metric(
-        "Articoli",
-        len(articoli)
-    )
-
-with c3:
-
-    if client:
-
-        st.success(
-            "Gemini configurato"
-        )
-
-    else:
-
-        st.error(
-            "Gemini non configurato"
-        )
-
-if df_clienti.empty:
-
-    st.warning(
-        "clienti.xlsx non trovato."
-    )
-
-else:
-
-    st.caption(
-        f"clienti.xlsx: "
-        f"{len(df_clienti)} righe"
-    )
-
-if df_articoli.empty:
-
-    st.warning(
-        "articoli.xlsx non trovato."
-    )
-
-else:
-
-    st.caption(
-        f"articoli.xlsx: "
-        f"{len(df_articoli)} righe"
-    )
-```
-
+# STATO GEMINI
 # ============================================================
 
+if client is None:
+
+    st.error(
+        "Gemini non configurato. "
+        "Controlla GEMINI_API_KEY nei Secrets di Streamlit "
+        "e google-genai nel requirements.txt."
+    )
+
+
+# ============================================================
 # TABS
-
 # ============================================================
 
 tab_pdf, tab_email = st.tabs(
-[
-"📄 PDF / Immagine",
-"✉️ Email"
-]
+    [
+        "📄 PDF / Immagine",
+        "✉️ Email",
+    ]
 )
 
+
 # ============================================================
-
 # PDF
-
 # ============================================================
 
 with tab_pdf:
 
-```
-uploaded_file = st.file_uploader(
-    "Carica ordine",
-    type=[
-        "pdf",
-        "jpg",
-        "jpeg",
-        "png",
-        "webp"
-    ]
-)
+    uploaded_file = st.file_uploader(
 
-if uploaded_file:
+        "Carica l'ordine",
 
-    st.info(
-        f"File selezionato: "
-        f"**{uploaded_file.name}**"
+        type=[
+            "pdf",
+            "png",
+            "jpg",
+            "jpeg",
+            "webp",
+        ],
+
+        label_visibility="collapsed",
     )
 
-if uploaded_file and st.button(
-    "⚡ Leggi ordine",
-    type="primary",
-    use_container_width=True
-):
 
-    if not client:
+    if uploaded_file:
 
-        st.error(
-            "GEMINI_API_KEY non configurata. "
-            "Controlla Streamlit → Settings → Secrets."
+        st.caption(
+            f"File selezionato: {uploaded_file.name}"
         )
 
-    else:
 
-        with st.spinner(
-            "Sto leggendo l'ordine..."
+        if st.button(
+            "⚡ Leggi ordine",
+            type="primary",
+            key="leggi_pdf",
         ):
 
-            try:
-
-                risultato = analizza_pdf(
-                    uploaded_file
-                )
-
-                righe = elabora_righe(
-                    risultato
-                )
-
-                st.session_state.righe = (
-                    righe
-                )
-
-                st.session_state.dati_analisi = (
-                    righe
-                )
-
-                st.success(
-                    f"Lettura completata: "
-                    f"{len(righe)} righe trovate."
-                )
-
-            except Exception as e:
+            if client is None:
 
                 st.error(
-                    f"Errore durante la lettura: {e}"
+                    "GEMINI_API_KEY non configurata."
                 )
-```
+
+            else:
+
+                with st.spinner(
+                    "Gemini sta leggendo l'ordine..."
+                ):
+
+                    try:
+
+                        nuove_righe = analizza_file(
+                            uploaded_file
+                        )
+
+
+                        if nuove_righe:
+
+                            st.session_state.dati.extend(
+                                nuove_righe
+                            )
+
+                            st.success(
+                                f"{len(nuove_righe)} "
+                                "righe estratte correttamente."
+                            )
+
+                            st.rerun()
+
+                        else:
+
+                            st.warning(
+                                "Non sono state trovate "
+                                "righe articolo."
+                            )
+
+
+                    except Exception as exc:
+
+                        st.error(
+                            f"Errore durante la lettura: {exc}"
+                        )
+
 
 # ============================================================
-
 # EMAIL
-
 # ============================================================
 
 with tab_email:
 
-```
-testo_email = st.text_area(
-    "Incolla qui l'email dell'ordine",
-    height=250,
-    placeholder=(
-        "Incolla qui il testo ricevuto "
-        "dal cliente..."
+    testo_email = st.text_area(
+
+        "Incolla qui il testo dell'ordine",
+
+        height=220,
+
+        placeholder=(
+            "Incolla qui il contenuto "
+            "dell'email del cliente..."
+        ),
     )
-)
 
-if st.button(
-    "⚡ Leggi email",
-    type="primary",
-    use_container_width=True
-):
 
-    if not testo_email.strip():
+    if st.button(
+        "⚡ Leggi email",
+        type="primary",
+        key="leggi_email",
+    ):
 
-        st.warning(
-            "Inserisci prima il testo dell'email."
-        )
+        if client is None:
 
-    elif not client:
+            st.error(
+                "GEMINI_API_KEY non configurata."
+            )
 
-        st.error(
-            "GEMINI_API_KEY non configurata."
-        )
+        elif not testo_email.strip():
 
-    else:
+            st.warning(
+                "Incolla prima il testo dell'ordine."
+            )
 
-        with st.spinner(
-            "Sto analizzando l'ordine..."
-        ):
+        else:
 
-            try:
+            with st.spinner(
+                "Gemini sta leggendo l'email..."
+            ):
 
-                risultato = analizza_email(
-                    testo_email
-                )
+                try:
 
-                righe = elabora_righe(
-                    risultato
-                )
+                    nuove_righe = analizza_email(
+                        testo_email
+                    )
 
-                st.session_state.righe = (
-                    righe
-                )
 
-                st.session_state.dati_analisi = (
-                    righe
-                )
+                    if nuove_righe:
 
-                st.success(
-                    f"Lettura completata: "
-                    f"{len(righe)} righe trovate."
-                )
+                        st.session_state.dati.extend(
+                            nuove_righe
+                        )
 
-            except Exception as e:
+                        st.success(
+                            f"{len(nuove_righe)} "
+                            "righe estratte correttamente."
+                        )
 
-                st.error(
-                    f"Errore durante l'analisi: {e}"
-                )
-```
+                        st.rerun()
+
+                    else:
+
+                        st.warning(
+                            "Non sono state trovate "
+                            "righe articolo."
+                        )
+
+
+                except Exception as exc:
+
+                    st.error(
+                        f"Errore durante la lettura: {exc}"
+                    )
+
 
 # ============================================================
-
-# TABELLA RISULTATI
-
+# TABELLA
 # ============================================================
 
 st.divider()
 
 st.subheader(
-"📋 Risultato dell'ordine"
+    "📋 Ordine estratto"
 )
 
-if not st.session_state.righe:
 
-```
-st.info(
-    "Carica un ordine PDF oppure "
-    "incolla un'email per iniziare."
-)
-```
-
-else:
-
-```
-df_risultati = pd.DataFrame(
-    st.session_state.righe
-)
-
-colonne_visibili = [
-    "RIGA",
+colonne_tabella = [
     "COD_CLIENTE",
     "RAGIONE_SOCIALE",
     "COD_ARTICOLO",
     "DESCRIZIONE",
     "QUANTITA",
     "DATA_CONSEGNA",
-    "STATO"
 ]
 
-df_visibile = df_risultati[
-    colonne_visibili
+
+if st.session_state.dati:
+
+    df = pd.DataFrame(
+        st.session_state.dati
+    )
+
+else:
+
+    df = pd.DataFrame(
+        columns=colonne_tabella
+    )
+
+
+for colonna in colonne_tabella:
+
+    if colonna not in df.columns:
+
+        df[colonna] = ""
+
+
+df_visibile = df[
+    colonne_tabella
 ].copy()
 
-st.data_editor(
+
+# ============================================================
+# DATA EDITOR
+# ============================================================
+
+edited_df = st.data_editor(
+
     df_visibile,
+
     use_container_width=True,
-    hide_index=True,
-    disabled=[
-        "RIGA",
-        "COD_CLIENTE",
-        "RAGIONE_SOCIALE",
-        "COD_ARTICOLO",
-        "DESCRIZIONE",
-        "QUANTITA",
-        "DATA_CONSEGNA",
-        "STATO"
-    ]
+
+    num_rows="dynamic",
+
+    key="editor_ordini",
+
+    column_config={
+
+        "COD_CLIENTE":
+            st.column_config.TextColumn(
+                "COD_CLIENTE"
+            ),
+
+        "RAGIONE_SOCIALE":
+            st.column_config.SelectboxColumn(
+
+                "RAGIONE SOCIALE",
+
+                options=sorted(
+                    {
+                        cliente["ragione"]
+                        for cliente in CLIENTI
+                    }
+                ),
+
+                required=False,
+            ),
+
+        "COD_ARTICOLO":
+            st.column_config.SelectboxColumn(
+
+                "COD_ARTICOLO",
+
+                options=sorted(
+                    {
+                        articolo["codice"]
+                        for articolo in ARTICOLI
+                    }
+                ),
+
+                required=False,
+            ),
+
+        "DESCRIZIONE":
+            st.column_config.TextColumn(
+                "DESCRIZIONE"
+            ),
+
+        "QUANTITA":
+            st.column_config.NumberColumn(
+
+                "QUANTITA",
+
+                min_value=0,
+
+                step=1,
+            ),
+
+        "DATA_CONSEGNA":
+            st.column_config.TextColumn(
+
+                "DATA CONSEGNA",
+
+                help="Formato GG/MM/AAAA",
+            ),
+    },
 )
 
 
-# ========================================================
-# VERIFICA RIGHE
-# ========================================================
+# ============================================================
+# SALVATAGGIO MODIFICHE
+# ============================================================
 
-st.subheader(
-    "🔎 Controllo corrispondenze"
-)
+if st.session_state.dati:
 
-for indice, riga in enumerate(
-    st.session_state.righe
-):
+    dati_originali = st.session_state.dati
 
-    stato = riga["STATO"]
+    nuovi_dati = []
 
-    if stato == "✅ OK":
-        continue
+    for indice, riga in edited_df.iterrows():
 
-    with st.expander(
-        f"{stato}  Riga {riga['RIGA']} — "
-        f"{riga['COD_ARTICOLO'] or 'codice non riconosciuto'}"
+        record = riga.to_dict()
+
+        if indice < len(dati_originali):
+
+            vecchio_record = dati_originali[indice]
+
+            record["_CONF_CLIENTE"] = (
+                vecchio_record.get(
+                    "_CONF_CLIENTE",
+                    1.0
+                )
+            )
+
+            record["_CONF_ARTICOLO"] = (
+                vecchio_record.get(
+                    "_CONF_ARTICOLO",
+                    1.0
+                )
+            )
+
+            record["_CLIENTI_SIMILI"] = (
+                vecchio_record.get(
+                    "_CLIENTI_SIMILI",
+                    []
+                )
+            )
+
+            record["_ARTICOLI_SIMILI"] = (
+                vecchio_record.get(
+                    "_ARTICOLI_SIMILI",
+                    []
+                )
+            )
+
+        nuovi_dati.append(record)
+
+
+    st.session_state.dati = nuovi_dati
+
+
+# ============================================================
+# CONTROLLO CORRISPONDENZE
+# ============================================================
+
+if st.session_state.dati:
+
+    st.subheader(
+        "🔎 Controllo corrispondenze"
+    )
+
+
+    almeno_un_avviso = False
+
+
+    for indice, riga in enumerate(
+        st.session_state.dati
     ):
 
-        st.write(
-            "**Informazioni estratte:**"
+        conf_cliente = riga.get(
+            "_CONF_CLIENTE",
+            1.0
         )
 
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            st.write(
-                f"**Cliente:** "
-                f"{riga['RAGIONE_SOCIALE'] or 'Non trovato'}"
-            )
-
-            st.write(
-                f"**Codice cliente:** "
-                f"{riga['COD_CLIENTE'] or 'Non trovato'}"
-            )
-
-        with c2:
-
-            st.write(
-                f"**Codice articolo:** "
-                f"{riga['COD_ARTICOLO'] or 'Non trovato'}"
-            )
-
-            st.write(
-                f"**Descrizione:** "
-                f"{riga['DESCRIZIONE'] or 'Non trovata'}"
-            )
+        conf_articolo = riga.get(
+            "_CONF_ARTICOLO",
+            1.0
+        )
 
 
-        candidati_art = riga[
-            "_CANDIDATI_ARTICOLO"
-        ]
-
-        candidati_cli = riga[
-            "_CANDIDATI_CLIENTE"
-        ]
+        clienti_simili = riga.get(
+            "_CLIENTI_SIMILI",
+            []
+        )
 
 
-        # ------------------------------------------------
-        # CANDIDATI ARTICOLO
-        # ------------------------------------------------
+        articoli_simili = riga.get(
+            "_ARTICOLI_SIMILI",
+            []
+        )
 
-        if candidati_art:
 
-            st.write(
-                "**Possibili articoli:**"
-            )
+        if (
+            conf_cliente < 0.88
+            and clienti_simili
+        ):
 
-            dati_candidati = []
+            almeno_un_avviso = True
 
-            for candidato in candidati_art:
+            with st.expander(
+                f"🟡 Cliente riga {indice + 1}"
+            ):
 
-                dati_candidati.append(
-                    {
-                        "Codice":
-                            candidato[
-                                "codice"
-                            ],
-
-                        "Descrizione":
-                            candidato[
-                                "descrizione"
-                            ],
-
-                        "Somiglianza":
-                            f"{candidato['score'] * 100:.1f}%"
-                    }
+                st.write(
+                    "Cliente letto dal documento:"
                 )
 
-            st.dataframe(
-                pd.DataFrame(
-                    dati_candidati
-                ),
-                use_container_width=True,
-                hide_index=True
-            )
-
-
-        # ------------------------------------------------
-        # CANDIDATI CLIENTE
-        # ------------------------------------------------
-
-        if candidati_cli:
-
-            st.write(
-                "**Possibili clienti:**"
-            )
-
-            dati_clienti = []
-
-            for candidato in candidati_cli:
-
-                dati_clienti.append(
-                    {
-                        "Ragione sociale":
-                            candidato[
-                                "valore"
-                            ],
-
-                        "Codice cliente":
-                            candidato[
-                                "codice"
-                            ],
-
-                        "Somiglianza":
-                            f"{candidato['score'] * 100:.1f}%"
-                    }
+                st.write(
+                    riga.get(
+                        "RAGIONE_SOCIALE",
+                        ""
+                    )
                 )
 
-            st.dataframe(
-                pd.DataFrame(
-                    dati_clienti
-                ),
-                use_container_width=True,
-                hide_index=True
-            )
-```
+
+                st.write(
+                    "Possibili clienti:"
+                )
+
+
+                for cliente, score in clienti_simili[:5]:
+
+                    st.write(
+                        f"• {cliente['ragione']} "
+                        f"— Codice: {cliente['codice']} "
+                        f"— Corrispondenza: {score:.0%}"
+                    )
+
+
+        if (
+            conf_articolo < 0.92
+            and articoli_simili
+        ):
+
+            almeno_un_avviso = True
+
+            with st.expander(
+                f"🟡 Articolo riga {indice + 1}"
+            ):
+
+                st.write(
+                    "Articolo letto dal documento:"
+                )
+
+                st.write(
+                    f"Codice: "
+                    f"{riga.get('COD_ARTICOLO', '')}"
+                )
+
+                st.write(
+                    f"Descrizione: "
+                    f"{riga.get('DESCRIZIONE', '')}"
+                )
+
+
+                st.write(
+                    "Possibili articoli:"
+                )
+
+
+                for articolo, score in articoli_simili[:5]:
+
+                    st.write(
+                        f"• {articolo['codice']} "
+                        f"— {articolo['descrizione']} "
+                        f"— Corrispondenza: {score:.0%}"
+                    )
+
+
+    if not almeno_un_avviso:
+
+        st.success(
+            "✓ Tutte le corrispondenze sono considerate sicure."
+        )
+
 
 # ============================================================
-
-# ESPORTAZIONE
-
+# ESPORTAZIONE CSV
 # ============================================================
 
-if st.session_state.righe:
-
-```
 st.divider()
 
-df_export = pd.DataFrame(
-    st.session_state.righe
-)
 
-df_export = df_export[
-    colonne_visibili
-]
+if st.session_state.dati:
 
-csv = df_export.to_csv(
+    df_export = pd.DataFrame(
+        st.session_state.dati
+    )
+
+
+    for colonna in colonne_tabella:
+
+        if colonna not in df_export.columns:
+
+            df_export[colonna] = ""
+
+
+    df_export = df_export[
+        colonne_tabella
+    ]
+
+
+else:
+
+    df_export = pd.DataFrame(
+        columns=colonne_tabella
+    )
+
+
+csv_data = df_export.to_csv(
     index=False,
     encoding="utf-8-sig"
-).encode(
-    "utf-8-sig"
-)
+).encode("utf-8-sig")
+
 
 st.download_button(
-    "📥 Esporta ordine CSV",
-    data=csv,
-    file_name="ordine_letto.csv",
+
+    label="📥 Esporta CSV",
+
+    data=csv_data,
+
+    file_name="ordine_estratto.csv",
+
     mime="text/csv",
-    type="primary"
+
+    type="primary",
 )
+
+
+if st.button(
+    "🗑️ Svuota tabella"
+):
+
+    st.session_state.dati = []
+
+    st.rerun()
+
+
+# ============================================================
+# STATO SISTEMA
+# ============================================================
+
+with st.expander(
+    "ℹ️ Stato sistema"
+):
+
+    col1, col2, col3 = st.columns(3)
+
+
+    with col1:
+
+        st.metric(
+            "Clienti caricati",
+            len(CLIENTI)
+        )
+
+
+    with col2:
+
+        st.metric(
+            "Articoli caricati",
+            len(ARTICOLI)
+        )
+
+
+    with col3:
+
+        st.metric(
+            "Righe in tabella",
+            len(st.session_state.dati)
+        )
+
+
+    if client:
+
+        st.success(
+            "✓ Gemini configurato"
+        )
+
+    else:
+
+        st.error(
+            "✗ Gemini non configurato"
+        )
+
+
+    if df_clienti.empty:
+
+        st.warning(
+            "clienti.xlsx non trovato "
+            "o non leggibile."
+        )
+
+    else:
+
+        st.caption(
+            f"✓ clienti.xlsx — "
+            f"{len(df_clienti)} righe"
+        )
+
+
+    if df_articoli.empty:
+
+        st.warning(
+            "articoli.xlsx non trovato "
+            "o non leggibile."
+        )
+
+    else:
+
+        st.caption(
+            f"✓ articoli.xlsx — "
+            f"{len(df_articoli)} righe"
+        )
