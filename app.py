@@ -69,7 +69,6 @@ unsafe_allow_html=True
 @st.cache_resource
 def get_gemini_client():
 
-```
 if genai is None:
     return None
 
