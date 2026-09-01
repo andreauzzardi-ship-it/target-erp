@@ -54,7 +54,7 @@ def get_client():
 
 client = get_client()
 
-# Funzione di fallback per i modelli Gemini
+# Funzione con il nuovo modello aggiornato
 def genera_contenuto_con_fallback(contents, json_mode=False):
     if not client:
         raise Exception("Client API non disponibile.")
@@ -62,14 +62,14 @@ def genera_contenuto_con_fallback(contents, json_mode=False):
     config = {"response_mime_type": "application/json"} if json_mode else {}
     try:
         return client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=contents,
             config=config
         )
     except Exception as e:
         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
             return client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model="gemini-3.6-flash",
                 contents=contents,
                 config=config
             )
@@ -157,7 +157,6 @@ with col_chat:
         st.subheader("🤖 Victoria — Target ERP")
         st.caption("Chiedi informazioni sui prodotti.")
         
-        # Opzione per caricare il listino direttamente nella chat
         uploaded_listino_chat = st.file_uploader("Carica PDF listino per la chat", type=["pdf"], key="chat_listino_pdf")
         
         chat_container = st.container(height=250)
@@ -188,7 +187,6 @@ with col_chat:
 
                         contenuto_messaggio = []
                         
-                        # Se è stato caricato un PDF del listino nella chat, lo passiamo a Victoria
                         if uploaded_listino_chat:
                             try:
                                 pdf_bytes = uploaded_listino_chat.read()
@@ -204,7 +202,7 @@ with col_chat:
 
                         try:
                             chat = client.chats.create(
-                                model="gemini-2.5-flash",
+                                model="gemini-3.6-flash",
                                 config={"system_instruction": system_instruction}
                             )
                             response = chat.send_message(contenuto_messaggio)
@@ -213,7 +211,7 @@ with col_chat:
                             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                                 try:
                                     chat_fallback = client.chats.create(
-                                        model="gemini-2.5-flash-lite",
+                                        model="gemini-3.6-flash",
                                         config={"system_instruction": system_instruction}
                                     )
                                     response = chat_fallback.send_message(contenuto_messaggio)
