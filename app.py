@@ -339,27 +339,45 @@ with tab_upload:
   if uploaded_files and st.button(
       "⚡ Analizza File ed Inserisci in Tabella", type="primary"
   ):
-    with st.spinner("Analisi documenti e incrocio dati in corso..."):
+    with st.spinner(
+        "Analisi documenti e abbinamento rigoroso codici/articoli in corso..."
+    ):
       try:
         if "dati" not in st.session_state:
           st.session_state.dati = []
 
         totale_aggiunti = 0
 
-        # Invece di caricare l'intero Excel binario (che fa esplodere i token),
-        # passiamo un estratto pulito e testuale dei primi 1000 articoli o una stringa ottimizzata
-        catalogo_testuale = ""
+        # Prepariamo un dizionario o una lista chiara e pulita degli articoli reali da passare al prompt
+        catalogo_rigido = ""
         if not df_articoli.empty and col_art_trovata and col_desc_trovata:
-          # Prendiamo un campione o l'elenco testuale pulito per non sovraccaricare i token
-          subset_art = df_articoli[[col_art_trovata, col_desc_trovata]].head(
-              1500
-          )  # Limite di sicurezza
-          catalogo_testuale = (
-              "\nCATALOGO ARTICOLI UFFICIALE (Riferimento):\n"
-              + subset_art.to_string(index=False)
+          # Prendiamo i campi chiave puliti
+          df_catalogo_clean = df_articoli[
+              [col_art_trovata, col_desc_trovata]
+          ].dropna()
+          catalogo_rigido = (
+              "\nLISTINO UFFICIALE DI RIFERIMENTO (Usa ESATTAMENTE questi"
+              " codici in base alla descrizione):\n"
+              + df_catalogo_clean.to_string(index=False)
           )
 
-        prompt_dinamico = prompt_base_estrazione + catalogo_testuale
+        # Prompt di estrazione ultra-rigido per forzare l'associazione del codice
+        prompt_estrazione_rigido = f"""
+Analizza la richiesta per un documento di tipo: {doc_type}.
+
+ELENCO RAGIONI SOCIALI CLIENTE VALIDE:
+{elenco_ragioni_sociali}
+
+{catalogo_rigido}
+
+REGOLE TASSATIVE PER L'ESTRAZIONE:
+1. Trova l'intestazione o il nome del cliente nel documento e abbinalo all'ELENCO RAGIONI SOCIALI CLIENTE VALIDE (se non lo trovi usa "").
+2. Per ogni riga articolo trovata nel documento:
+   - Estrai la DESCRIZIONE e la QUANTITA (numero intero) e la DATA_CONSEGNA.
+   - **FONDAMENTALE**: Guarda il LISTINO UFFICIALE DI RIFERIMENTO qui sopra. Cerca la descrizione corrispondente e **copia esattamente il CODICE ARTICOLO (Codart)** associato. Non inventare o lasciare "N/D" se la descrizione corrisponde a un articolo del listino!
+3. Restituisci ESCLUSIVAMENTE un JSON (lista di oggetti) con le chiavi esatte:
+   "COD_CLIENTE", "RAGIONE_SOCIALE", "COD_ARTICOLO", "DESCRIZIONE", "QUANTITA", "DATA_CONSEGNA".
+"""
 
         for uploaded_file in uploaded_files:
           file_bytes = uploaded_file.read()
@@ -370,11 +388,11 @@ with tab_upload:
           )
 
           res = genera_contenuto_con_fallback(
-              [risorsa_pdf, prompt_dinamico], json_mode=True
+              [risorsa_pdf, prompt_estrazione_rigido], json_mode=True
           )
 
           nuovi_dati = json.loads(res.text)
-          for riga in nuovi_dati:
+          for riga in nuevos if "nuevos" in locals() else nuovi_dati:
             riga["RAGIONE_SOCIALE"] = trova_ragione_sociale_valida(
                 riga.get("RAGIONE_SOCIALE", "")
             )
@@ -383,8 +401,8 @@ with tab_upload:
           totale_aggiunti += len(nuovi_dati)
 
         st.success(
-            f"Elaborati {len(uploaded_files)} file! Aggiunte {totale_aggiunti}"
-            " righe alla tabella."
+            f"Elaborati {len(uploaded_files)} file con abbinamento codici!"
+            f" Aggiunte {totale_aggiunti} righe."
         )
         st.rerun()
 
