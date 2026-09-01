@@ -333,28 +333,50 @@ with tab_upload:
   uploaded_files = st.file_uploader(
       "Trascina file (PDF o Immagine)",
       type=["pdf", "jpg", "png", "jpeg"],
-      accept_multiple_files=True,  # <--- ABILITA IL CARICAMENTO MULTIPLO
+      accept_multiple_files=True,
       label_visibility="collapsed",
   )
   if uploaded_files and st.button(
       "⚡ Analizza File ed Inserisci in Tabella", type="primary"
   ):
-    with st.spinner("Lettura ed estrazione dati dai file in corso..."):
+    with st.spinner(
+        "Analisi documenti e incrocio dati con il listino in corso..."
+    ):
       try:
         if "dati" not in st.session_state:
           st.session_state.dati = []
 
         totale_aggiunti = 0
+
+        # Prepariamo un allegato o un contesto forte con il listino articoli se esiste
+        elementi_per_ia = [prompt_base_estrazione]
+
+        # Se abbiamo il file excel degli articoli localmente, lo passiamo a Gemini come file di supporto
+        if os.path.exists("articoli.xlsx"):
+          with open("articoli.xlsx", "rb") as f_art:
+            art_bytes = f_art.read()
+            file_excel_obj = client.files.upload(
+                file=io.BytesIO(art_bytes),
+                config={
+                    "display_name": "articoli.xlsx",
+                    "mime_type": (
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    ),
+                },
+            )
+            elementi_per_ia.append(file_excel_obj)
+
         for uploaded_file in uploaded_files:
           file_bytes = uploaded_file.read()
           mime_type = uploaded_file.type
 
+          # Uniamo il file caricato (PDF/Immagine), il listino Excel di supporto e le istruzioni
+          risorsa_pdf = types.Part.from_bytes(
+              data=file_bytes, mime_type=mime_type
+          )
+
           res = genera_contenuto_con_fallback(
-              [
-                  types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-                  prompt_base_estrazione,
-              ],
-              json_mode=True,
+              [risorsa_pdf] + elementi_per_ia, json_mode=True
           )
 
           nuovi_dati = json.loads(res.text)
@@ -367,8 +389,8 @@ with tab_upload:
           totale_aggiunti += len(nuovi_dati)
 
         st.success(
-            f"Elaborati {len(uploaded_files)} file! Aggiunte {totale_aggiunti}"
-            " righe alla tabella."
+            f"Elaborati {len(uploaded_files)} file incrociandoli con il listino!"
+            f" Aggiunte {totale_aggiunti} righe."
         )
         st.rerun()
 
