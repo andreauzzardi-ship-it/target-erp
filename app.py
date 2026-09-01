@@ -1,4 +1,3 @@
-import base64
 import json
 import re
 import time
@@ -18,18 +17,6 @@ st.set_page_config(
     page_title="Target ERP - Smart Order & Quote Hub",
     layout="wide"
 )
-
-BASE_DIR = Path(__file__).resolve().parent
-
-FILE_CLIENTI = BASE_DIR / "clienti.xlsx"
-FILE_ARTICOLI = BASE_DIR / "articoli.xlsx"
-FILE_LISTINO = BASE_DIR / "listino.pdf"
-
-# Modello economico e adatto ad alto volume
-MODELLO_ESTRAZIONE = "gpt-5.6-luna"
-
-# Modello per Victoria
-MODELLO_VICTORIA = "gpt-5.6-luna"
 
 
 # ============================================================
@@ -61,17 +48,37 @@ st.markdown(
 
 
 # ============================================================
-# OPENAI
+# PERCORSI FILE
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+FILE_CLIENTI = BASE_DIR / "clienti.xlsx"
+FILE_ARTICOLI = BASE_DIR / "articoli.xlsx"
+FILE_LISTINO = BASE_DIR / "listino.pdf"
+
+
+# ============================================================
+# MODELLO OPENAI
+# ============================================================
+
+MODELLO_OPENAI = "gpt-5.6-luna"
+
+
+# ============================================================
+# CLIENT OPENAI
 # ============================================================
 
 @st.cache_resource
 def get_client():
+    """
+    Inizializza il client OpenAI usando Streamlit Secrets.
+    """
 
     try:
+        api_key = st.secrets.get("OPENAI_API_KEY")
 
-        api_key = st.secrets.get("OPENAI_API_KEY", "")
-
-        if not api_key:
+        if api_key is None:
             return None
 
         api_key = str(api_key).strip()
@@ -79,9 +86,7 @@ def get_client():
         if not api_key:
             return None
 
-        return OpenAI(
-            api_key=api_key
-        )
+        return OpenAI(api_key=api_key)
 
     except Exception:
         return None
@@ -91,10 +96,13 @@ client = get_client()
 
 
 # ============================================================
-# UTILITY
+# UTILITÀ TESTO
 # ============================================================
 
 def normalizza_testo(valore):
+    """
+    Converte qualsiasi valore in testo pulito.
+    """
 
     if valore is None:
         return ""
@@ -115,23 +123,22 @@ def normalizza_testo(valore):
         "nd",
         "n.a.",
         "na",
+        "n.a",
     }:
         return ""
 
-    testo = re.sub(
-        r"\s+",
-        " ",
-        testo
-    )
+    testo = re.sub(r"\s+", " ", testo)
 
-    return testo
+    return testo.strip()
 
 
 def normalizza_chiave(valore):
+    """
+    Normalizzazione aggressiva per confrontare
+    codici, clienti e descrizioni.
+    """
 
-    testo = normalizza_testo(
-        valore
-    ).upper()
+    testo = normalizza_testo(valore).upper()
 
     sostituzioni = {
         "À": "A",
@@ -157,16 +164,9 @@ def normalizza_chiave(valore):
     }
 
     for vecchio, nuovo in sostituzioni.items():
-        testo = testo.replace(
-            vecchio,
-            nuovo
-        )
+        testo = testo.replace(vecchio, nuovo)
 
-    return re.sub(
-        r"[^A-Z0-9]",
-        "",
-        testo
-    )
+    return re.sub(r"[^A-Z0-9]", "", testo)
 
 
 def similarita(a, b):
@@ -188,58 +188,120 @@ def similarita(a, b):
 
 
 # ============================================================
-# GESTIONE ERRORI OPENAI
+# ERRORI OPENAI
 # ============================================================
 
 def descrivi_errore_openai(error):
+    """
+    Restituisce un messaggio diagnostico.
+    Non trasforma automaticamente ogni errore in un falso
+    'rate limit'.
+    """
 
     testo = str(error)
-    testo_upper = testo.upper()
 
-    if "401" in testo or "INVALID_API_KEY" in testo_upper:
-        return (
-            "❌ API Key OpenAI non valida. "
-            "Controlla la chiave inserita nei Secrets di Streamlit."
+    status = getattr(error, "status_code", None)
+
+    request_id = getattr(
+        error,
+        "request_id",
+        None
+    )
+
+    if status is None:
+
+        match = re.search(
+            r"Error code:\s*(\d+)",
+            testo
         )
 
-    if "403" in testo:
-        return (
-            "❌ Accesso OpenAI negato. "
-            "Controlla progetto, permessi o configurazione API."
+        if match:
+            status = match.group(1)
+
+    if status == 401:
+        messaggio = (
+            "Errore 401: API key non valida, "
+            "scaduta o non autorizzata."
         )
 
-    if "429" in testo or "RATE LIMIT" in testo_upper:
-
-        return (
-            "⏳ OpenAI ha temporaneamente limitato le richieste. "
-            "Attendi qualche secondo e riprova."
+    elif status == 403:
+        messaggio = (
+            "Errore 403: richiesta non autorizzata. "
+            "Controlla progetto, permessi o billing OpenAI."
         )
 
-    if "500" in testo:
-        return (
-            "⚠️ Il server OpenAI ha restituito un errore temporaneo "
-            "(500). Riprova tra qualche secondo."
+    elif status == 400:
+        messaggio = (
+            "Errore 400: richiesta non valida. "
+            "Il problema potrebbe riguardare il file "
+            "o il formato della richiesta."
         )
 
-    if "502" in testo or "503" in testo:
-        return (
-            "⚠️ Il servizio OpenAI è momentaneamente non disponibile. "
-            "Riprova tra poco."
+    elif status == 404:
+        messaggio = (
+            "Errore 404: modello o risorsa non trovata."
         )
 
-    if "TIMEOUT" in testo_upper:
-        return (
-            "⏱️ La richiesta è scaduta. "
-            "Il documento potrebbe essere molto grande."
+    elif status == 429:
+        messaggio = (
+            "Errore 429: limite di richieste o quota "
+            "temporaneamente raggiunta."
         )
+
+    elif status == 500:
+        messaggio = (
+            "Errore 500: errore temporaneo del server OpenAI."
+        )
+
+    elif status == 502:
+        messaggio = (
+            "Errore 502: servizio OpenAI temporaneamente "
+            "non disponibile."
+        )
+
+    elif status == 503:
+        messaggio = (
+            "Errore 503: servizio OpenAI temporaneamente "
+            "sovraccarico."
+        )
+
+    else:
+        messaggio = (
+            "Errore durante la comunicazione con OpenAI."
+        )
+
+    dettagli = f"\n\nDettagli tecnici: {testo}"
+
+    if request_id:
+        dettagli += (
+            f"\nRequest ID: {request_id}"
+        )
+
+    return messaggio + dettagli
+
+
+def è_rate_limit(error):
+
+    status = getattr(
+        error,
+        "status_code",
+        None
+    )
+
+    if status == 429:
+        return True
+
+    testo = str(error).upper()
 
     return (
-        f"Errore OpenAI: {testo}"
+        "429" in testo
+        or "RATE LIMIT" in testo
+        or "TOO MANY REQUESTS" in testo
     )
 
 
 # ============================================================
-# EXCEL
+# CARICAMENTO EXCEL
 # ============================================================
 
 @st.cache_data
@@ -252,9 +314,7 @@ def carica_excel(percorso):
         if not percorso.exists():
             return pd.DataFrame()
 
-        df = pd.read_excel(
-            percorso
-        )
+        df = pd.read_excel(percorso)
 
         if df.empty:
             return pd.DataFrame()
@@ -271,41 +331,34 @@ def carica_excel(percorso):
         return pd.DataFrame()
 
 
-df_clienti = carica_excel(
-    FILE_CLIENTI
-)
-
-df_articoli = carica_excel(
-    FILE_ARTICOLI
-)
+df_clienti = carica_excel(FILE_CLIENTI)
+df_articoli = carica_excel(FILE_ARTICOLI)
 
 
 # ============================================================
-# TROVA COLONNA
+# RICERCA COLONNE EXCEL
 # ============================================================
 
-def trova_colonna(df, possibili):
+def trova_colonna(df, nomi):
 
     if df.empty:
         return None
 
-    target = {
-        normalizza_chiave(x)
-        for x in possibili
+    nomi_normalizzati = {
+        normalizza_chiave(nome)
+        for nome in nomi
     }
 
     for colonna in df.columns:
 
-        if normalizza_chiave(
-            colonna
-        ) in target:
-
+        if (
+            normalizza_chiave(colonna)
+            in nomi_normalizzati
+        ):
             return colonna
 
     return None
 
-
-# CLIENTI
 
 colonna_ragione_sociale = trova_colonna(
     df_clienti,
@@ -318,6 +371,7 @@ colonna_ragione_sociale = trova_colonna(
     ]
 )
 
+
 colonna_codice_cliente = trova_colonna(
     df_clienti,
     [
@@ -329,8 +383,6 @@ colonna_codice_cliente = trova_colonna(
 )
 
 
-# ARTICOLI
-
 colonna_codice_articolo = trova_colonna(
     df_articoli,
     [
@@ -340,6 +392,7 @@ colonna_codice_articolo = trova_colonna(
         "CODICE",
     ]
 )
+
 
 colonna_descrizione_articolo = trova_colonna(
     df_articoli,
@@ -354,15 +407,15 @@ colonna_descrizione_articolo = trova_colonna(
 # ANAGRAFICA CLIENTI
 # ============================================================
 
-def costruisci_clienti():
+def costruisci_anagrafica_clienti():
 
-    risultato = []
+    risultati = []
 
     if df_clienti.empty:
-        return risultato
+        return risultati
 
     if not colonna_ragione_sociale:
-        return risultato
+        return risultati
 
     for _, riga in df_clienti.iterrows():
 
@@ -387,29 +440,29 @@ def costruisci_clienti():
                 )
             )
 
-        risultato.append(
+        risultati.append(
             {
                 "ragione_sociale": ragione,
                 "codice_cliente": codice,
             }
         )
 
-    return risultato
+    return risultati
 
 
 # ============================================================
 # ANAGRAFICA ARTICOLI
 # ============================================================
 
-def costruisci_articoli():
+def costruisci_anagrafica_articoli():
 
-    risultato = []
+    risultati = []
 
     if df_articoli.empty:
-        return risultato
+        return risultati
 
     if not colonna_codice_articolo:
-        return risultato
+        return risultati
 
     for _, riga in df_articoli.iterrows():
 
@@ -434,18 +487,23 @@ def costruisci_articoli():
                 )
             )
 
-        risultato.append(
+        risultati.append(
             {
                 "codice": codice,
                 "descrizione": descrizione,
             }
         )
 
-    return risultato
+    return risultati
 
 
-anagrafica_clienti = costruisci_clienti()
-anagrafica_articoli = costruisci_articoli()
+anagrafica_clienti = (
+    costruisci_anagrafica_clienti()
+)
+
+anagrafica_articoli = (
+    costruisci_anagrafica_articoli()
+)
 
 
 # ============================================================
@@ -519,26 +577,19 @@ lista_descrizioni = sorted(
 
 def trova_cliente(testo):
 
-    testo = normalizza_testo(
-        testo
-    )
+    testo = normalizza_testo(testo)
 
     if not testo:
         return None
 
-    chiave = normalizza_chiave(
-        testo
-    )
+    chiave = normalizza_chiave(testo)
 
-    # MATCH ESATTO
     if chiave in mappa_clienti:
         return mappa_clienti[chiave]
 
-    # CODICE CLIENTE
     if chiave in mappa_codici_cliente:
         return mappa_codici_cliente[chiave]
 
-    # CONTIENE
     for cliente in anagrafica_clienti:
 
         nome = normalizza_chiave(
@@ -551,7 +602,6 @@ def trova_cliente(testo):
         ):
             return cliente
 
-    # FUZZY
     migliore = None
     miglior_score = 0
 
@@ -585,17 +635,12 @@ def trova_articolo(
     descrizione=""
 ):
 
-    codice = normalizza_testo(
-        codice
-    )
+    codice = normalizza_testo(codice)
+    descrizione = normalizza_testo(descrizione)
 
-    descrizione = normalizza_testo(
-        descrizione
-    )
-
-    # ========================================================
-    # PRIORITÀ ASSOLUTA: CODICE
-    # ========================================================
+    # --------------------------------------------------------
+    # CODICE ESATTO
+    # --------------------------------------------------------
 
     if codice:
 
@@ -603,22 +648,24 @@ def trova_articolo(
             codice
         )
 
-        # MATCH ESATTO
-        if chiave in mappa_articoli:
+        articolo = mappa_articoli.get(
+            chiave
+        )
 
-            return mappa_articoli[
-                chiave
-            ]
+        if articolo:
+            return articolo
 
-    # ========================================================
+    # --------------------------------------------------------
     # DESCRIZIONE ESATTA
-    # ========================================================
+    # --------------------------------------------------------
 
     if descrizione:
 
         chiave = normalizza_chiave(
             descrizione
         )
+
+        candidati = []
 
         for articolo in anagrafica_articoli:
 
@@ -628,12 +675,16 @@ def trova_articolo(
                 )
                 == chiave
             ):
+                candidati.append(
+                    articolo
+                )
 
-                return articolo
+        if len(candidati) == 1:
+            return candidati[0]
 
-    # ========================================================
-    # DESCRIZIONE FUZZY
-    # ========================================================
+    # --------------------------------------------------------
+    # FUZZY DESCRIPTION
+    # --------------------------------------------------------
 
     if descrizione:
 
@@ -642,16 +693,12 @@ def trova_articolo(
 
         for articolo in anagrafica_articoli:
 
-            desc = articolo[
-                "descrizione"
-            ]
-
-            if not desc:
+            if not articolo["descrizione"]:
                 continue
 
             score = similarita(
                 descrizione,
-                desc
+                articolo["descrizione"]
             )
 
             if score > miglior_score:
@@ -661,7 +708,7 @@ def trova_articolo(
 
         if (
             migliore
-            and miglior_score >= 0.90
+            and miglior_score >= 0.92
         ):
             return migliore
 
@@ -674,9 +721,7 @@ def trova_articolo(
 
 def normalizza_quantita(valore):
 
-    testo = normalizza_testo(
-        valore
-    )
+    testo = normalizza_testo(valore)
 
     if not testo:
         return ""
@@ -713,9 +758,7 @@ def normalizza_quantita(valore):
 
 def normalizza_data(valore):
 
-    testo = normalizza_testo(
-        valore
-    )
+    testo = normalizza_testo(valore)
 
     if not testo:
         return ""
@@ -740,7 +783,61 @@ def normalizza_data(valore):
 
 
 # ============================================================
-# SCHEMA
+# PROMPT ESTRAZIONE
+# ============================================================
+
+def prompt_estrazione(tipo_documento):
+
+    return f"""
+Sei il motore di estrazione documentale di Target ERP.
+
+TIPO DOCUMENTO:
+{tipo_documento}
+
+Devi analizzare il documento allegato ed estrarre
+tutte le righe articolo presenti.
+
+Per ogni riga estrai:
+
+COD_CLIENTE
+RAGIONE_SOCIALE
+COD_ARTICOLO
+DESCRIZIONE
+QUANTITA
+DATA_CONSEGNA
+
+REGOLE IMPORTANTI:
+
+1. NON INVENTARE DATI.
+
+2. Se un dato non è presente o non è leggibile,
+   restituisci una stringa vuota.
+
+3. COD_ARTICOLO deve essere copiato dal documento
+   esattamente come appare.
+
+4. DESCRIZIONE deve essere copiata dal documento
+   se presente.
+
+5. Ogni riga articolo deve essere separata.
+
+6. Se ci sono 10 articoli devi restituire 10 righe.
+
+7. Non sommare articoli diversi.
+
+8. Non modificare i codici.
+
+9. Non cercare di costruire o correggere
+   autonomamente i codici.
+
+10. Non aggiungere spiegazioni.
+
+11. Restituisci esclusivamente il JSON richiesto.
+"""
+
+
+# ============================================================
+# JSON SCHEMA
 # ============================================================
 
 SCHEMA_ESTRAZIONE = {
@@ -771,7 +868,7 @@ SCHEMA_ESTRAZIONE = {
                         "type": "string"
                     },
 
-                    "DESCRIZIONE_DOCUMENTO": {
+                    "DESCRIZIONE": {
                         "type": "string"
                     },
 
@@ -789,7 +886,7 @@ SCHEMA_ESTRAZIONE = {
                     "COD_CLIENTE",
                     "RAGIONE_SOCIALE",
                     "COD_ARTICOLO",
-                    "DESCRIZIONE_DOCUMENTO",
+                    "DESCRIZIONE",
                     "QUANTITA",
                     "DATA_CONSEGNA"
                 ],
@@ -808,110 +905,13 @@ SCHEMA_ESTRAZIONE = {
 
 
 # ============================================================
-# PROMPT
-# ============================================================
-
-def prompt_estrazione(tipo_documento):
-
-    return f"""
-Sei il motore OCR/documentale di Target ERP.
-
-TIPO DOCUMENTO:
-{tipo_documento}
-
-Devi leggere il documento e individuare tutte le righe
-relative agli articoli ordinati o richiesti.
-
-Per ogni riga estrai:
-
-COD_CLIENTE
-RAGIONE_SOCIALE
-COD_ARTICOLO
-DESCRIZIONE_DOCUMENTO
-QUANTITA
-DATA_CONSEGNA
-
-REGOLE IMPORTANTISSIME:
-
-1. NON INVENTARE MAI UN CODICE.
-
-2. COPIA IL CODICE ARTICOLO ESATTAMENTE COME APPARE
-   NEL DOCUMENTO.
-
-3. Se il codice è poco leggibile, prova a leggerlo
-   dal documento ma non inventarlo.
-
-4. DESCRIZIONE_DOCUMENTO deve contenere la descrizione
-   visibile nel documento, se presente.
-
-5. Non devi cercare la descrizione ufficiale:
-   quella verrà recuperata automaticamente da articoli.xlsx.
-
-6. Ogni riga articolo deve diventare una riga JSON.
-
-7. Non unire articoli diversi.
-
-8. Non eliminare righe duplicate.
-
-9. Se un valore non è presente restituisci stringa vuota.
-
-10. Restituisci esclusivamente il JSON richiesto.
-"""
-
-
-# ============================================================
-# INPUT FILE
-# ============================================================
-
-def prepara_file(uploaded_file):
-
-    dati = uploaded_file.getvalue()
-
-    if not dati:
-        raise ValueError(
-            "Il file caricato è vuoto."
-        )
-
-    mime = uploaded_file.type
-
-    encoded = base64.b64encode(
-        dati
-    ).decode("utf-8")
-
-    # PDF
-    if mime == "application/pdf":
-
-        return {
-            "type": "input_file",
-            "filename": uploaded_file.name,
-            "file_data":
-                "data:application/pdf;base64,"
-                + encoded
-        }
-
-    # IMMAGINE
-    if mime.startswith("image/"):
-
-        return {
-            "type": "input_image",
-            "image_url":
-                f"data:{mime};base64,{encoded}",
-            "detail": "high"
-        }
-
-    raise ValueError(
-        "Formato non supportato."
-    )
-
-
-# ============================================================
-# CHIAMATA OPENAI
+# CHIAMATA RESPONSES API
 # ============================================================
 
 def chiama_openai(
     input_data,
     istruzioni=None,
-    schema=None
+    json_mode=False
 ):
 
     if not client:
@@ -920,46 +920,287 @@ def chiama_openai(
             "OPENAI_API_KEY non configurata."
         )
 
-    params = {
-
-        "model":
-            MODELLO_ESTRAZIONE,
-
-        "input":
-            input_data,
+    parametri = {
+        "model": MODELLO_OPENAI,
+        "input": input_data,
     }
 
     if istruzioni:
+        parametri["instructions"] = istruzioni
 
-        params[
-            "instructions"
-        ] = istruzioni
+    if json_mode:
 
-    if schema:
-
-        params["text"] = {
-
+        parametri["text"] = {
             "format": {
-
-                "type":
-                    "json_schema",
-
-                "name":
-                    "target_erp_extraction",
-
-                "strict":
-                    True,
-
-                "schema":
-                    schema,
+                "type": "json_schema",
+                "name": "target_erp_extraction",
+                "strict": True,
+                "schema": SCHEMA_ESTRAZIONE,
             }
         }
 
-    # UNA SOLA RICHIESTA.
-    # Nessun retry automatico aggressivo.
-    return client.responses.create(
-        **params
+    ultimo_errore = None
+
+    # Massimo 3 tentativi solo per 429 / 5xx
+    for tentativo in range(3):
+
+        try:
+
+            return client.responses.create(
+                **parametri
+            )
+
+        except Exception as error:
+
+            ultimo_errore = error
+
+            status = getattr(
+                error,
+                "status_code",
+                None
+            )
+
+            # Retry solo su errori temporanei
+            if status in {
+                429,
+                500,
+                502,
+                503,
+                504
+            }:
+
+                if tentativo < 2:
+
+                    time.sleep(
+                        2 ** tentativo
+                    )
+
+                    continue
+
+            raise
+
+    raise ultimo_errore
+
+
+# ============================================================
+# UPLOAD FILE OPENAI
+# ============================================================
+
+def carica_file_openai(
+    uploaded_file
+):
+
+    if not client:
+
+        raise RuntimeError(
+            "OPENAI_API_KEY non configurata."
+        )
+
+    file_bytes = uploaded_file.getvalue()
+
+    if not file_bytes:
+
+        raise ValueError(
+            "Il file caricato è vuoto."
+        )
+
+    try:
+
+        file_obj = client.files.create(
+
+            file=(
+                uploaded_file.name,
+                file_bytes
+            ),
+
+            purpose="user_data"
+        )
+
+        return file_obj
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "Errore durante il caricamento "
+            "del file su OpenAI.\n\n"
+            + descrivi_errore_openai(error)
+        )
+
+
+# ============================================================
+# ANALISI PDF
+# ============================================================
+
+def analizza_pdf(
+    uploaded_file,
+    tipo_documento
+):
+
+    file_obj = carica_file_openai(
+        uploaded_file
     )
+
+    try:
+
+        response = chiama_openai(
+
+            input_data=[
+
+                {
+                    "role": "user",
+
+                    "content": [
+
+                        {
+                            "type": "input_file",
+                            "file_id": file_obj.id,
+                        },
+
+                        {
+                            "type": "input_text",
+
+                            "text":
+                                prompt_estrazione(
+                                    tipo_documento
+                                ),
+                        },
+
+                    ],
+                }
+
+            ],
+
+            json_mode=True
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            descrivi_errore_openai(error)
+        )
+
+    testo = response.output_text
+
+    if not testo:
+
+        raise RuntimeError(
+            "OpenAI ha restituito una risposta vuota."
+        )
+
+    try:
+
+        risultato = json.loads(
+            testo
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "OpenAI non ha restituito "
+            "un JSON valido.\n\n"
+            f"Risposta ricevuta:\n{testo}\n\n"
+            f"Errore JSON: {error}"
+        )
+
+    righe = []
+
+    for record in risultato.get(
+        "righe",
+        []
+    ):
+
+        riga = normalizza_record(
+            record
+        )
+
+        if riga:
+            righe.append(riga)
+
+    return righe
+
+
+# ============================================================
+# ANALISI EMAIL
+# ============================================================
+
+def analizza_email(
+    testo_email,
+    tipo_documento
+):
+
+    testo_email = normalizza_testo(
+        testo_email
+    )
+
+    if not testo_email:
+
+        return []
+
+    input_data = [
+
+        {
+            "role": "user",
+
+            "content": [
+
+                {
+                    "type": "input_text",
+
+                    "text":
+                        prompt_estrazione(
+                            tipo_documento
+                        )
+                        + "\n\n"
+                        + "TESTO EMAIL:\n"
+                        + testo_email,
+                }
+
+            ],
+        }
+
+    ]
+
+    try:
+
+        response = chiama_openai(
+            input_data=input_data,
+            json_mode=True
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            descrivi_errore_openai(error)
+        )
+
+    try:
+
+        risultato = json.loads(
+            response.output_text
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "JSON restituito da OpenAI non valido.\n\n"
+            f"{error}"
+        )
+
+    righe = []
+
+    for record in risultato.get(
+        "righe",
+        []
+    ):
+
+        riga = normalizza_record(
+            record
+        )
+
+        if riga:
+            righe.append(riga)
+
+    return righe
 
 
 # ============================================================
@@ -968,10 +1209,7 @@ def chiama_openai(
 
 def normalizza_record(record):
 
-    if not isinstance(
-        record,
-        dict
-    ):
+    if not isinstance(record, dict):
         return None
 
     codice_cliente_raw = normalizza_testo(
@@ -995,9 +1233,9 @@ def normalizza_record(record):
         )
     )
 
-    descrizione_documento = normalizza_testo(
+    descrizione_raw = normalizza_testo(
         record.get(
-            "DESCRIZIONE_DOCUMENTO",
+            "DESCRIZIONE",
             ""
         )
     )
@@ -1034,13 +1272,13 @@ def normalizza_record(record):
 
     if cliente:
 
-        codice_cliente = cliente[
-            "codice_cliente"
-        ]
+        codice_cliente = (
+            cliente["codice_cliente"]
+        )
 
-        ragione_sociale = cliente[
-            "ragione_sociale"
-        ]
+        ragione_sociale = (
+            cliente["ragione_sociale"]
+        )
 
     else:
 
@@ -1058,30 +1296,29 @@ def normalizza_record(record):
 
     articolo = trova_articolo(
 
-        codice=
-            codice_articolo_raw,
+        codice=codice_articolo_raw,
 
-        descrizione=
-            descrizione_documento
+        descrizione=descrizione_raw
     )
 
     if articolo:
 
         # ====================================================
-        # QUESTO È IL PUNTO CHIAVE
+        # IMPORTANTE:
         #
-        # La descrizione NON viene presa da OpenAI.
+        # Se il codice esiste in articoli.xlsx,
+        # la descrizione viene SEMPRE presa da Excel.
         #
-        # Viene presa direttamente da articoli.xlsx.
+        # OpenAI non può sovrascriverla.
         # ====================================================
 
-        codice_articolo = articolo[
-            "codice"
-        ]
+        codice_articolo = (
+            articolo["codice"]
+        )
 
-        descrizione = articolo[
-            "descrizione"
-        ]
+        descrizione = (
+            articolo["descrizione"]
+        )
 
     else:
 
@@ -1090,7 +1327,7 @@ def normalizza_record(record):
         )
 
         descrizione = (
-            descrizione_documento
+            descrizione_raw
         )
 
     return {
@@ -1115,178 +1352,12 @@ def normalizza_record(record):
         "DATA_CONSEGNA":
             normalizza_data(
                 data_raw
-            )
+            ),
     }
 
 
 # ============================================================
-# ANALISI FILE
-# ============================================================
-
-def analizza_file(
-    uploaded_file,
-    tipo_documento
-):
-
-    file_input = prepara_file(
-        uploaded_file
-    )
-
-    response = chiama_openai(
-
-        input_data=[
-
-            {
-
-                "role":
-                    "user",
-
-                "content": [
-
-                    file_input,
-
-                    {
-
-                        "type":
-                            "input_text",
-
-                        "text":
-                            prompt_estrazione(
-                                tipo_documento
-                            )
-                    }
-                ]
-            }
-        ],
-
-        schema=
-            SCHEMA_ESTRAZIONE
-    )
-
-    testo = response.output_text
-
-    if not testo:
-
-        raise RuntimeError(
-            "OpenAI non ha restituito alcun risultato."
-        )
-
-    try:
-
-        risultato = json.loads(
-            testo
-        )
-
-    except Exception as e:
-
-        raise RuntimeError(
-            "Risposta OpenAI non valida: "
-            + str(e)
-        )
-
-    righe = []
-
-    for record in risultato.get(
-        "righe",
-        []
-    ):
-
-        riga = normalizza_record(
-            record
-        )
-
-        if riga:
-            righe.append(
-                riga
-            )
-
-    return righe
-
-
-# ============================================================
-# ANALISI EMAIL
-# ============================================================
-
-def analizza_email(
-    testo_email,
-    tipo_documento
-):
-
-    if not testo_email.strip():
-
-        return []
-
-    input_data = [
-
-        {
-
-            "role":
-                "user",
-
-            "content": [
-
-                {
-
-                    "type":
-                        "input_text",
-
-                    "text":
-                        prompt_estrazione(
-                            tipo_documento
-                        )
-                        + """
-
-TESTO DEL DOCUMENTO:
-
-"""
-                        + testo_email
-                }
-            ]
-        }
-    ]
-
-    response = chiama_openai(
-
-        input_data=input_data,
-
-        schema=
-            SCHEMA_ESTRAZIONE
-    )
-
-    try:
-
-        risultato = json.loads(
-            response.output_text
-        )
-
-    except Exception as e:
-
-        raise RuntimeError(
-            "JSON OpenAI non valido: "
-            + str(e)
-        )
-
-    righe = []
-
-    for record in risultato.get(
-        "righe",
-        []
-    ):
-
-        riga = normalizza_record(
-            record
-        )
-
-        if riga:
-            righe.append(
-                riga
-            )
-
-    return righe
-
-
-# ============================================================
-# VICTORIA
+# LISTINO
 # ============================================================
 
 @st.cache_data
@@ -1296,25 +1367,48 @@ def carica_listino():
         return None
 
     try:
+
         return FILE_LISTINO.read_bytes()
 
     except Exception:
+
         return None
 
 
 def chiedi_a_victoria(domanda):
 
-    pdf = carica_listino()
-
-    if not pdf:
+    if not client:
 
         raise RuntimeError(
-            "listino.pdf non trovato."
+            "OPENAI_API_KEY non configurata."
         )
 
-    encoded = base64.b64encode(
-        pdf
-    ).decode("utf-8")
+    pdf_bytes = carica_listino()
+
+    if not pdf_bytes:
+
+        raise RuntimeError(
+            "listino.pdf non trovato "
+            "nella root del repository."
+        )
+
+    try:
+
+        file_obj = client.files.create(
+
+            file=(
+                "listino.pdf",
+                pdf_bytes
+            ),
+
+            purpose="user_data"
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            descrivi_errore_openai(error)
+        )
 
     istruzioni = """
 Sei Victoria, l'assistente virtuale ufficiale
@@ -1323,63 +1417,57 @@ del software Target ERP.
 Devi rispondere utilizzando esclusivamente
 il listino PDF allegato.
 
-Regole:
+REGOLE:
 
 - Non inventare prezzi.
 - Non inventare codici.
 - Non inventare caratteristiche.
-- Se una informazione non è presente,
-  dichiaralo chiaramente.
 - Non usare clienti.xlsx.
 - Non usare articoli.xlsx.
-- Rispondi in italiano.
-- Sii professionale e sintetica.
-- Se chiedono chi ti ha creata:
+- Se una informazione non è presente nel listino,
+  dichiaralo chiaramente.
+- Rispondi sempre in italiano.
+- Rispondi in modo professionale e sintetico.
+- Se ti chiedono chi ti ha creata o sviluppata,
   rispondi che sei stata creata da Andrea Uzzardi.
 """
 
-    response = client.responses.create(
+    try:
 
-        model=
-            MODELLO_VICTORIA,
+        response = chiama_openai(
 
-        instructions=
-            istruzioni,
+            input_data=[
 
-        input=[
+                {
+                    "role": "user",
 
-            {
+                    "content": [
 
-                "role":
-                    "user",
+                        {
+                            "type": "input_file",
+                            "file_id": file_obj.id,
+                        },
 
-                "content": [
+                        {
+                            "type": "input_text",
+                            "text": domanda,
+                        },
 
-                    {
+                    ],
+                }
 
-                        "type":
-                            "input_file",
+            ],
 
-                        "filename":
-                            "listino.pdf",
+            istruzioni=istruzioni,
 
-                        "file_data":
-                            "data:application/pdf;base64,"
-                            + encoded
-                    },
+            json_mode=False
+        )
 
-                    {
+    except Exception as error:
 
-                        "type":
-                            "input_text",
-
-                        "text":
-                            domanda
-                    }
-                ]
-            }
-        ]
-    )
+        raise RuntimeError(
+            descrivi_errore_openai(error)
+        )
 
     return response.output_text.strip()
 
@@ -1389,12 +1477,10 @@ Regole:
 # ============================================================
 
 if "dati" not in st.session_state:
-
     st.session_state.dati = []
 
 
 if "messages" not in st.session_state:
-
     st.session_state.messages = []
 
 
@@ -1436,14 +1522,16 @@ with col_chat:
 
         with chat_container:
 
-            for msg in st.session_state.messages:
+            for messaggio in (
+                st.session_state.messages
+            ):
 
                 with st.chat_message(
-                    msg["role"]
+                    messaggio["role"]
                 ):
 
                     st.markdown(
-                        msg["content"]
+                        messaggio["content"]
                     )
 
         domanda = st.chat_input(
@@ -1454,11 +1542,8 @@ with col_chat:
 
             st.session_state.messages.append(
                 {
-                    "role":
-                        "user",
-
-                    "content":
-                        domanda
+                    "role": "user",
+                    "content": domanda,
                 }
             )
 
@@ -1472,19 +1557,16 @@ with col_chat:
                         domanda
                     )
 
-            except Exception as e:
+            except Exception as error:
 
-                risposta = descrivi_errore_openai(
-                    e
+                risposta = (
+                    f"❌ {error}"
                 )
 
             st.session_state.messages.append(
                 {
-                    "role":
-                        "assistant",
-
-                    "content":
-                        risposta
+                    "role": "assistant",
+                    "content": risposta,
                 }
             )
 
@@ -1499,13 +1581,14 @@ st.write(
     "Seleziona il tipo di documento:"
 )
 
+
 tipo_documento = st.radio(
 
     "Tipo documento",
 
     [
         "🛒 Ordine Cliente",
-        "📋 Offerta"
+        "📋 Offerta",
     ],
 
     horizontal=True,
@@ -1521,7 +1604,7 @@ tipo_documento = st.radio(
 tab_upload, tab_email = st.tabs(
     [
         "📄 Carica PDF / Immagine",
-        "✉️ Incolla Testo Email"
+        "✉️ Incolla Testo Email",
     ]
 )
 
@@ -1534,14 +1617,14 @@ with tab_upload:
 
     uploaded_file = st.file_uploader(
 
-        "Trascina qui il documento",
+        "Trascina qui il PDF o l'immagine",
 
         type=[
             "pdf",
             "jpg",
             "jpeg",
             "png",
-            "webp"
+            "webp",
         ],
 
         label_visibility="collapsed"
@@ -1550,7 +1633,9 @@ with tab_upload:
     if uploaded_file:
 
         st.caption(
-            f"📎 {uploaded_file.name}"
+            f"File selezionato: "
+            f"**{uploaded_file.name}** "
+            f"({uploaded_file.size / 1024:.1f} KB)"
         )
 
         if st.button(
@@ -1564,15 +1649,20 @@ with tab_upload:
                     "❌ OPENAI_API_KEY non configurata."
                 )
 
+                st.info(
+                    "Controlla Streamlit → "
+                    "Settings → Secrets."
+                )
+
             else:
 
                 with st.spinner(
-                    "ChatGPT sta leggendo il documento..."
+                    "OpenAI sta leggendo il documento..."
                 ):
 
                     try:
 
-                        nuove_righe = analizza_file(
+                        nuove_righe = analizza_pdf(
 
                             uploaded_file,
 
@@ -1587,11 +1677,7 @@ with tab_upload:
 
                             st.success(
                                 f"✓ {len(nuove_righe)} "
-                                "righe inserite."
-                            )
-
-                            time.sleep(
-                                0.5
+                                "righe estratte."
                             )
 
                             st.rerun()
@@ -1599,15 +1685,14 @@ with tab_upload:
                         else:
 
                             st.warning(
-                                "Nessuna riga articolo trovata."
+                                "Nessuna riga articolo "
+                                "trovata nel documento."
                             )
 
-                    except Exception as e:
+                    except Exception as error:
 
                         st.error(
-                            descrivi_errore_openai(
-                                e
-                            )
+                            f"❌ {error}"
                         )
 
 
@@ -1619,7 +1704,8 @@ with tab_email:
 
     testo_email = st.text_area(
 
-        "Incolla qui il testo dell'email",
+        "Incolla qui il testo dell'email "
+        "o dell'ordine",
 
         height=180
     )
@@ -1632,7 +1718,7 @@ with tab_email:
         if not testo_email.strip():
 
             st.warning(
-                "Incolla prima il testo dell'email."
+                "Incolla il testo prima di procedere."
             )
 
         elif not client:
@@ -1644,7 +1730,7 @@ with tab_email:
         else:
 
             with st.spinner(
-                "ChatGPT sta analizzando l'email..."
+                "OpenAI sta analizzando l'email..."
             ):
 
                 try:
@@ -1664,7 +1750,7 @@ with tab_email:
 
                         st.success(
                             f"✓ {len(nuove_righe)} "
-                            "righe inserite."
+                            "righe estratte."
                         )
 
                         st.rerun()
@@ -1675,12 +1761,10 @@ with tab_email:
                             "Nessuna riga articolo trovata."
                         )
 
-                except Exception as e:
+                except Exception as error:
 
                     st.error(
-                        descrivi_errore_openai(
-                            e
-                        )
+                        f"❌ {error}"
                     )
 
 
@@ -1695,13 +1779,13 @@ st.subheader(
 )
 
 
-COLONNE = [
+colonne = [
     "COD_CLIENTE",
     "RAGIONE_SOCIALE",
     "COD_ARTICOLO",
     "DESCRIZIONE",
     "QUANTITA",
-    "DATA_CONSEGNA"
+    "DATA_CONSEGNA",
 ]
 
 
@@ -1714,123 +1798,149 @@ if st.session_state.dati:
 else:
 
     df = pd.DataFrame(
-        columns=COLONNE
+        columns=colonne
     )
 
 
-for colonna in COLONNE:
+for colonna in colonne:
 
     if colonna not in df.columns:
 
         df[colonna] = ""
 
 
-df = df[COLONNE]
+df = df[colonne]
 
 
 # ============================================================
-# SINCRONIZZAZIONE
+# SINCRONIZZAZIONE CLIENTE
 # ============================================================
 
-def sincronizza_riga(riga):
+def sincronizza_cliente_riga(riga):
 
-    # ========================================================
-    # CLIENTE
-    # ========================================================
-
-    cliente = trova_cliente(
+    ragione = normalizza_testo(
         riga.get(
             "RAGIONE_SOCIALE",
             ""
         )
     )
 
-    if not cliente:
+    codice = normalizza_testo(
+        riga.get(
+            "COD_CLIENTE",
+            ""
+        )
+    )
+
+    cliente = trova_cliente(
+        ragione
+    )
+
+    if not cliente and codice:
 
         cliente = mappa_codici_cliente.get(
             normalizza_chiave(
-                riga.get(
-                    "COD_CLIENTE",
-                    ""
-                )
+                codice
             )
         )
 
     if cliente:
 
         riga["RAGIONE_SOCIALE"] = (
-            cliente[
-                "ragione_sociale"
-            ]
+            cliente["ragione_sociale"]
         )
 
         riga["COD_CLIENTE"] = (
-            cliente[
-                "codice_cliente"
-            ]
+            cliente["codice_cliente"]
         )
-
-    # ========================================================
-    # ARTICOLO
-    # ========================================================
-
-    articolo = trova_articolo(
-
-        codice=
-            riga.get(
-                "COD_ARTICOLO",
-                ""
-            ),
-
-        descrizione=
-            riga.get(
-                "DESCRIZIONE",
-                ""
-            )
-    )
-
-    if articolo:
-
-        # ====================================================
-        # CODICE E DESCRIZIONE DEVONO SEMPRE ESSERE
-        # QUELLI DELL'ANAGRAFICA EXCEL.
-        # ====================================================
-
-        riga["COD_ARTICOLO"] = (
-            articolo["codice"]
-        )
-
-        riga["DESCRIZIONE"] = (
-            articolo["descrizione"]
-        )
-
-    riga["QUANTITA"] = normalizza_quantita(
-        riga.get(
-            "QUANTITA",
-            ""
-        )
-    )
-
-    riga["DATA_CONSEGNA"] = normalizza_data(
-        riga.get(
-            "DATA_CONSEGNA",
-            ""
-        )
-    )
 
     return riga
 
 
+# ============================================================
+# SINCRONIZZAZIONE ARTICOLO
+# ============================================================
+
+def sincronizza_articolo_riga(riga):
+
+    codice = normalizza_testo(
+        riga.get(
+            "COD_ARTICOLO",
+            ""
+        )
+    )
+
+    descrizione = normalizza_testo(
+        riga.get(
+            "DESCRIZIONE",
+            ""
+        )
+    )
+
+    # ========================================================
+    # PRIORITÀ ASSOLUTA AL CODICE
+    # ========================================================
+
+    if codice:
+
+        articolo = trova_articolo(
+            codice=codice
+        )
+
+        if articolo:
+
+            riga["COD_ARTICOLO"] = (
+                articolo["codice"]
+            )
+
+            riga["DESCRIZIONE"] = (
+                articolo["descrizione"]
+            )
+
+            return riga
+
+    # ========================================================
+    # SE NON ABBIAMO CODICE, CERCHIAMO PER DESCRIZIONE
+    # ========================================================
+
+    if descrizione:
+
+        articolo = trova_articolo(
+            descrizione=descrizione
+        )
+
+        if articolo:
+
+            riga["COD_ARTICOLO"] = (
+                articolo["codice"]
+            )
+
+            riga["DESCRIZIONE"] = (
+                articolo["descrizione"]
+            )
+
+    return riga
+
+
+# ============================================================
+# SINCRONIZZAZIONE INIZIALE
+# ============================================================
+
 if not df.empty:
 
     df = df.apply(
-        sincronizza_riga,
+        sincronizza_cliente_riga,
+        axis=1
+    )
+
+    df = df.apply(
+        sincronizza_articolo_riga,
         axis=1
     )
 
 
 # ============================================================
-# CONFIGURAZIONE EDITOR
+# CONFIGURAZIONE DATA EDITOR
 # ============================================================
 
 column_config = {}
@@ -1844,8 +1954,7 @@ if lista_clienti:
 
         "RAGIONE SOCIALE",
 
-        options=
-            lista_clienti,
+        options=lista_clienti,
 
         required=False
     )
@@ -1859,8 +1968,7 @@ if lista_codici_articoli:
 
         "COD_ARTICOLO",
 
-        options=
-            lista_codici_articoli,
+        options=lista_codici_articoli,
 
         required=False
     )
@@ -1874,8 +1982,7 @@ if lista_descrizioni:
 
         "DESCRIZIONE",
 
-        options=
-            lista_descrizioni,
+        options=lista_descrizioni,
 
         required=False
     )
@@ -1909,8 +2016,7 @@ column_config[
 
     "DATA CONSEGNA",
 
-    help=
-        "Formato GG/MM/AAAA"
+    help="Formato GG/MM/AAAA"
 )
 
 
@@ -1922,27 +2028,46 @@ edited_df = st.data_editor(
 
     df,
 
-    column_config=
-        column_config,
+    column_config=column_config,
 
     use_container_width=True,
 
     num_rows="dynamic",
 
-    key=
-        "editor_tabella"
+    key="editor_tabella"
 )
 
 
 # ============================================================
-# DOPO MODIFICA
+# SINCRONIZZAZIONE POST-MODIFICA
 # ============================================================
 
 if not edited_df.empty:
 
     edited_df = edited_df.apply(
-        sincronizza_riga,
+        sincronizza_cliente_riga,
         axis=1
+    )
+
+    edited_df = edited_df.apply(
+        sincronizza_articolo_riga,
+        axis=1
+    )
+
+    edited_df["QUANTITA"] = (
+        edited_df[
+            "QUANTITA"
+        ].apply(
+            normalizza_quantita
+        )
+    )
+
+    edited_df["DATA_CONSEGNA"] = (
+        edited_df[
+            "DATA_CONSEGNA"
+        ].apply(
+            normalizza_data
+        )
     )
 
 
@@ -1950,17 +2075,19 @@ edited_df = edited_df.fillna("")
 
 
 st.session_state.dati = (
-    edited_df.to_dict(
+    edited_df
+    .to_dict(
         orient="records"
     )
 )
 
 
 # ============================================================
-# CSV
+# ESPORTAZIONE CSV
 # ============================================================
 
 st.divider()
+
 
 csv_data = (
     edited_df
@@ -1974,20 +2101,15 @@ csv_data = (
 
 st.download_button(
 
-    label=
-        "📥 Esporta CSV Tabella",
+    label="📥 Esporta CSV Tabella",
 
-    data=
-        csv_data,
+    data=csv_data,
 
-    file_name=
-        "gestione_ordini.csv",
+    file_name="gestione_ordini.csv",
 
-    mime=
-        "text/csv",
+    mime="text/csv",
 
-    type=
-        "primary"
+    type="primary"
 )
 
 
@@ -1999,36 +2121,30 @@ with st.expander(
     "ℹ️ Stato sistema"
 ):
 
-    col1, col2, col3 = st.columns(
-        3
-    )
+    col1, col2, col3 = st.columns(3)
 
     with col1:
 
         st.metric(
             "Clienti caricati",
-            len(
-                anagrafica_clienti
-            )
+            len(anagrafica_clienti)
         )
 
     with col2:
 
         st.metric(
             "Articoli caricati",
-            len(
-                anagrafica_articoli
-            )
+            len(anagrafica_articoli)
         )
 
     with col3:
 
         st.metric(
             "Righe in tabella",
-            len(
-                edited_df
-            )
+            len(edited_df)
         )
+
+    st.write("---")
 
     if client:
 
@@ -2052,7 +2168,7 @@ with st.expander(
     else:
 
         st.warning(
-            "⚠️ clienti.xlsx non trovato"
+            "⚠ clienti.xlsx non trovato"
         )
 
     if not df_articoli.empty:
@@ -2065,18 +2181,22 @@ with st.expander(
     else:
 
         st.warning(
-            "⚠️ articoli.xlsx non trovato"
+            "⚠ articoli.xlsx non trovato"
         )
 
     if FILE_LISTINO.exists():
 
         st.caption(
-            f"✓ listino trovato: "
+            f"✓ Listino trovato: "
             f"{FILE_LISTINO.name}"
         )
 
     else:
 
         st.warning(
-            "⚠️ listino.pdf non trovato"
+            "⚠ listino.pdf non trovato"
         )
+
+    st.caption(
+        f"Modello OpenAI: {MODELLO_OPENAI}"
+    )
